@@ -6,7 +6,7 @@
     <string>com.eric.wifisignal</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/eric/Library/CloudStorage/OneDrive-Personal/Eric_Specific/myapps/wifi/WifiSignal</string>
+        <string>INSTALL_DIR/WifiSignal</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

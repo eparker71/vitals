@@ -48,30 +48,30 @@ The color meter segments are:
 ## Build & run
 
 ```bash
-# Clone
 git clone https://github.com/eparker71/wifisignal.git
 cd wifisignal
 
-# Build
+# Build only
 bash build.sh
 
 # Run (stays in menu bar, no Dock icon)
 ./WifiSignal &
 ```
 
-## Auto-start at login (LaunchAgent)
+## Auto-start at login
 
 ```bash
-# Copy the plist
-cp com.eric.wifisignal.plist ~/Library/LaunchAgents/
-
-# Load it (starts immediately and on every login)
-launchctl load ~/Library/LaunchAgents/com.eric.wifisignal.plist
+# Build + install LaunchAgent in one step
+bash build.sh --install
 ```
 
-To stop:
+This generates a `~/Library/LaunchAgents/com.eric.wifisignal.plist` with the
+correct path for your machine and loads it immediately.
+
+To stop and uninstall:
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.eric.wifisignal.plist
+rm ~/Library/LaunchAgents/com.eric.wifisignal.plist
 ```
 
 ## Files
