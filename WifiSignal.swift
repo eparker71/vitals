@@ -226,10 +226,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let out = NSMutableAttributedString()
         out.append(NSAttributedString(string: "\(lastRssi) dBm (\(lastPct)%) "))
-        out.append(colorMeter(pct: lastPct, inverted: false))
+        out.append(colorMeter(pct: lastPct, inverted: false, small: true))
         if let t = lastMaxTemp {
-            out.append(NSAttributedString(string: " │ \(t)°C "))
-            out.append(colorMeter(pct: cpuTempPercent(t), inverted: true))
+            out.append(NSAttributedString(string: " │ \(t)°C"))
         }
         statusItem.button?.attributedTitle = out
     }
@@ -278,9 +277,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 10-square color meter.
     /// inverted=false → WiFi style (green = high)
     /// inverted=true  → CPU style  (green = low, red = high)
-    func colorMeter(pct: Int, inverted: Bool) -> NSAttributedString {
+    /// small=true     → smaller font for compact title-bar use
+    func colorMeter(pct: Int, inverted: Bool, small: Bool = false) -> NSAttributedString {
         let out = NSMutableAttributedString()
         let filled = max(0, min(10, (pct + 9) / 10))
+        let font = small ? NSFont.monospacedSystemFont(ofSize: 7, weight: .regular) : nil
         for i in 0..<10 {
             let isFilled = i < filled
             let segPct = i * 10 + 5
@@ -292,8 +293,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 color = segPct >= 60 ? .systemGreen : segPct >= 30 ? .systemYellow : .systemRed
             }
-            out.append(NSAttributedString(string: isFilled ? "■" : "□",
-                                          attributes: [.foregroundColor: color]))
+            var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: color]
+            if let f = font { attrs[.font] = f }
+            out.append(NSAttributedString(string: isFilled ? "■" : "□", attributes: attrs))
         }
         return out
     }
