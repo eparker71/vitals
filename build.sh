@@ -9,6 +9,7 @@ echo "Building…"
 swiftc "$DIR/WifiSignal.swift" \
     -framework Cocoa \
     -framework CoreWLAN \
+    -framework IOKit \
     -o "$OUT"
 echo "Built → $OUT"
 
