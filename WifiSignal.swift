@@ -31,46 +31,61 @@ private struct SMCParam {
 class SMCReader {
     private var conn: io_connect_t = 0
 
+    // Populated at init: one entry per detected per-core key (TC1C, TC2C, …)
+    private(set) var coreKeys: [(label: String, key: String)] = []
+
     init?() {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
         guard svc != 0 else { return nil }
         defer { IOObjectRelease(svc) }
         guard IOServiceOpen(svc, mach_task_self_, 0, &conn) == kIOReturnSuccess else { return nil }
+        detectCoreKeys()
     }
 
     deinit { if conn != 0 { IOServiceClose(conn) } }
 
-    // Reads CPU temperature. Key priority for Intel Macs:
-    //   TC0P = CPU proximity (smooth, package-level)
-    //   TCXC = CPU PECI junction temp
-    //   TC1C/TC2C = individual core temps (spiky under load)
-    func cpuTemperature() -> Double? {
-        let candidates = ["TC0P", "TCXC", "TC1C", "TC0E", "TC0F"]
-        for key in candidates {
-            if let t = readSP78(key: key), t > 1, t < 125 { return t }
+    // Probe TC1C..TC8C at startup so we know which cores exist on this machine.
+    private func detectCoreKeys() {
+        for i in 1...8 {
+            let key = "TC\(i)C"
+            if keyIsReadable(key) { coreKeys.append((label: "Core \(i)", key: key)) }
         }
-        return nil
+        // Fallback if no per-core keys found: try package-level sensors
+        if coreKeys.isEmpty {
+            for key in ["TC0P", "TCXC", "TC0E"] {
+                if keyIsReadable(key) { coreKeys.append((label: "CPU", key: key)); break }
+            }
+        }
+    }
+
+    private func keyIsReadable(_ key: String) -> Bool {
+        guard let info = getKeyInfo(key) else { return false }
+        return info.result == 0 && info.keyInfo.dataSize > 0
+            && dataTypeString(info.keyInfo.dataType) == "sp78"
+    }
+
+    // Returns (label, °C) for each detected core, sorted hottest first.
+    func coreTemperatures() -> [(label: String, temp: Double)] {
+        coreKeys.compactMap { entry in
+            guard let t = readSP78(key: entry.key), t > 1, t < 125 else { return nil }
+            return (entry.label, t)
+        }.sorted { $0.temp > $1.temp }
     }
 
     private func readSP78(key: String) -> Double? {
-        guard var info = getKeyInfo(key) else { return nil }
-        guard info.keyInfo.dataSize > 0 else { return nil }
-        guard dataTypeString(info.keyInfo.dataType) == "sp78" else { return nil }
-
-        var input = SMCParam()
-        var output = SMCParam()
+        guard let info = getKeyInfo(key),
+              info.keyInfo.dataSize > 0,
+              dataTypeString(info.keyInfo.dataType) == "sp78" else { return nil }
+        var input = SMCParam(), output = SMCParam()
         input.key = fourCC(key)
         input.keyInfo.dataSize = info.keyInfo.dataSize
         input.data8 = 5  // kSMCReadKey
         guard callSMC(&input, &output) == kIOReturnSuccess else { return nil }
-
-        // sp78: signed fixed-point 7.8 — high byte is integer, low byte is fraction
         return Double(output.bytes.0) + Double(output.bytes.1) / 256.0
     }
 
     private func getKeyInfo(_ key: String) -> SMCParam? {
-        var input = SMCParam()
-        var output = SMCParam()
+        var input = SMCParam(), output = SMCParam()
         input.key = fourCC(key)
         input.data8 = 9  // kSMCGetKeyInfo
         guard callSMC(&input, &output) == kIOReturnSuccess else { return nil }
@@ -92,7 +107,7 @@ class SMCReader {
     private func dataTypeString(_ type: UInt32) -> String {
         let b: [UInt8] = [UInt8((type>>24)&0xff), UInt8((type>>16)&0xff),
                           UInt8((type>>8)&0xff),  UInt8(type&0xff)]
-        return String(bytes: b, encoding: .ascii) ?? ""
+        return b.map { ($0 >= 32 && $0 < 127) ? String(UnicodeScalar($0)) : "?" }.joined()
     }
 }
 
@@ -115,7 +130,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func buildMenu() {
         addSection(title: "Wi-Fi", rows: 7, into: &wifiItems)
         menu.addItem(.separator())
-        addSection(title: "CPU", rows: 2, into: &cpuItems)
+        // One row per detected core; minimum 1 for the "unavailable" case
+        let cpuRowCount = max(1, smc?.coreKeys.count ?? 1)
+        addSection(title: "CPU", rows: cpuRowCount, into: &cpuItems)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -162,7 +179,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sec   = iface.security().label
         let pct   = rssiPercent(rssi)
 
-        let wifiRows: [(String, String)] = [
+        let rows: [(String, String)] = [
             ("SSID",     ssid),
             ("Signal",   "\(rssi) dBm  →  \(pct)%"),
             ("Noise",    "\(noise) dBm"),
@@ -171,49 +188,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ("TX Rate",  "\(Int(tx)) Mbps"),
             ("Security", sec),
         ]
-        for (i, (label, value)) in wifiRows.enumerated() {
+        for (i, (label, value)) in rows.enumerated() {
             wifiItems[i].title = "  \(label): \(value)"
         }
-
-        updateTitle(rssi: rssi, pct: pct)
+        updateTitle(rssi: rssi, pct: pct, maxCoreTemp: nil)
     }
 
     // MARK: CPU
 
     func refreshCPU() {
-        if let temp = smc?.cpuTemperature() {
-            let t = Int(temp.rounded())
-            let pct = cpuTempPercent(t)
-            cpuItems[0].title = "  Temp: \(t) °C  →  \(pct)%"
-            cpuItems[0].attributedTitle = cpuTempLine(t, pct: pct)
-            cpuItems[1].isHidden = true
-        } else {
+        let cores = smc?.coreTemperatures() ?? []
+        // cores is already sorted hottest-first
+        if cores.isEmpty {
             cpuItems[0].title = "  Temp: unavailable"
-            cpuItems[1].isHidden = true
+            cpuItems[0].attributedTitle = nil
+        } else {
+            for (i, core) in cores.enumerated() {
+                let t   = Int(core.temp.rounded())
+                let pct = cpuTempPercent(t)
+                cpuItems[i].attributedTitle = cpuTempLine(label: core.label, temp: t, pct: pct)
+            }
         }
-        updateTitle(rssi: nil, pct: nil)  // re-trigger to pick up CPU value
+        let maxTemp = cores.first.map { Int($0.temp.rounded()) }
+        updateTitle(rssi: nil, pct: nil, maxCoreTemp: maxTemp)
     }
 
     // MARK: Title bar
 
     private var lastRssi: Int = 0
     private var lastPct:  Int = 0
+    private var lastMaxTemp: Int? = nil
 
-    func updateTitle(rssi: Int?, pct: Int?) {
+    func updateTitle(rssi: Int?, pct: Int?, maxCoreTemp: Int?) {
         if let r = rssi { lastRssi = r }
         if let p = pct  { lastPct  = p }
-
-        let cpuStr: String
-        if let temp = smc?.cpuTemperature() {
-            cpuStr = " │ \(Int(temp.rounded()))°C"
-        } else {
-            cpuStr = ""
-        }
+        if let t = maxCoreTemp { lastMaxTemp = t }
 
         let out = NSMutableAttributedString()
         out.append(NSAttributedString(string: "\(lastRssi) dBm (\(lastPct)%) "))
-        out.append(colorMeter(pct: lastPct, maxDeg: 60, goodAbove: 60, warnAbove: 30))
-        out.append(NSAttributedString(string: cpuStr))
+        out.append(colorMeter(pct: lastPct, inverted: false))
+        if let t = lastMaxTemp {
+            out.append(NSAttributedString(string: " │ \(t)°C "))
+            out.append(colorMeter(pct: cpuTempPercent(t), inverted: true))
+        }
         statusItem.button?.attributedTitle = out
     }
 
@@ -244,39 +261,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Helpers — CPU temp
 
-    // 0% = 30°C (idle), 100% = 100°C (throttle threshold)
+    // 30°C (idle) = 0%, 100°C (throttle point) = 100%
     func cpuTempPercent(_ temp: Int) -> Int {
         let c = max(30, min(100, temp))
         return (c - 30) * 100 / 70
     }
 
-    func cpuTempLine(_ temp: Int, pct: Int) -> NSAttributedString {
-        let out = NSMutableAttributedString(string: "  Temp: \(temp) °C  →  \(pct)% ")
-        // For CPU temp: green = cool, yellow = warm, red = hot (inverse of WiFi)
-        out.append(colorMeter(pct: pct, maxDeg: 10, goodAbove: -1, warnAbove: 30))
+    func cpuTempLine(label: String, temp: Int, pct: Int) -> NSAttributedString {
+        let out = NSMutableAttributedString(string: "  \(label): \(temp)°C (\(pct)%) ")
+        out.append(colorMeter(pct: pct, inverted: true))
         return out
     }
 
     // MARK: Color meter
 
-    /// Renders a 10-square color meter.
-    /// goodAbove / warnAbove control color thresholds (set goodAbove = -1 to invert for heat).
-    func colorMeter(pct: Int, maxDeg: Int, goodAbove: Int, warnAbove: Int) -> NSAttributedString {
+    /// 10-square color meter.
+    /// inverted=false → WiFi style (green = high)
+    /// inverted=true  → CPU style  (green = low, red = high)
+    func colorMeter(pct: Int, inverted: Bool) -> NSAttributedString {
         let out = NSMutableAttributedString()
-        let total = 10
-        let filled = max(0, min(total, (pct + 9) / 10))
-        for i in 0..<total {
+        let filled = max(0, min(10, (pct + 9) / 10))
+        for i in 0..<10 {
             let isFilled = i < filled
             let segPct = i * 10 + 5
             let color: NSColor
             if !isFilled {
                 color = .tertiaryLabelColor
-            } else if goodAbove >= 0 {
-                // WiFi style: green = high, yellow = mid, red = low
-                color = segPct >= goodAbove ? .systemGreen : segPct >= warnAbove ? .systemYellow : .systemRed
-            } else {
-                // CPU style: green = low, yellow = mid, red = high
+            } else if inverted {
                 color = segPct < 30 ? .systemGreen : segPct < 70 ? .systemYellow : .systemRed
+            } else {
+                color = segPct >= 60 ? .systemGreen : segPct >= 30 ? .systemYellow : .systemRed
             }
             out.append(NSAttributedString(string: isFilled ? "■" : "□",
                                           attributes: [.foregroundColor: color]))
@@ -288,12 +302,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 extension CWSecurity {
     var label: String {
         switch self {
-        case .none:                          return "Open"
-        case .WEP:                           return "WEP"
+        case .none:                           return "Open"
+        case .WEP:                            return "WEP"
         case .wpaPersonal, .wpaPersonalMixed: return "WPA"
-        case .wpa2Personal:                  return "WPA2"
-        case .wpa3Personal:                  return "WPA3"
-        default:                             return "Other"
+        case .wpa2Personal:                   return "WPA2"
+        case .wpa3Personal:                   return "WPA3"
+        default:                              return "Other"
         }
     }
 }
