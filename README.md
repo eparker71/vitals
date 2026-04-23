@@ -1,4 +1,4 @@
-# WifiSignal
+# Vitals
 
 A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signal strength, CPU core temps, GPU temp, memory temp, fan speed, battery health, and power draw — all from a single menu bar item with no Dock icon.
 
@@ -81,14 +81,14 @@ All sensor data is read directly from the System Management Controller (SMC) via
 ## Build & run
 
 ```bash
-git clone https://github.com/eparker71/wifisignal.git
-cd wifisignal
+git clone https://github.com/eparker71/vitals.git
+cd vitals
 
 # Build only
 bash build.sh
 
 # Run (stays in menu bar, no Dock icon)
-./WifiSignal &
+./Vitals &
 ```
 
 ## Auto-start at login
@@ -98,21 +98,21 @@ bash build.sh
 bash build.sh --install
 ```
 
-This generates `~/Library/LaunchAgents/com.eric.wifisignal.plist` with the correct
+This generates `~/Library/LaunchAgents/com.eric.vitals.plist` with the correct
 path for your machine and loads it immediately. The app will restart automatically
 at every login.
 
 To stop and uninstall:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.eric.wifisignal.plist
-rm ~/Library/LaunchAgents/com.eric.wifisignal.plist
+launchctl unload ~/Library/LaunchAgents/com.eric.vitals.plist
+rm ~/Library/LaunchAgents/com.eric.vitals.plist
 ```
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `WifiSignal.swift` | App source |
+| `Vitals.swift` | App source |
 | `build.sh` | Compile script (`--install` flag sets up login auto-start) |
-| `com.eric.wifisignal.plist` | LaunchAgent template (path substituted at install time) |
+| `com.eric.vitals.plist` | LaunchAgent template (path substituted at install time) |

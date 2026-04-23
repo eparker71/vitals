@@ -1,12 +1,12 @@
 #!/bin/zsh
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-OUT="$DIR/WifiSignal"
-PLIST_NAME="com.eric.wifisignal.plist"
+OUT="$DIR/Vitals"
+PLIST_NAME="com.eric.vitals.plist"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 
 echo "Building…"
-swiftc "$DIR/WifiSignal.swift" \
+swiftc "$DIR/Vitals.swift" \
     -framework Cocoa \
     -framework CoreWLAN \
     -framework IOKit \
@@ -18,7 +18,7 @@ if [[ "$1" == "--install" ]]; then
     sed "s|INSTALL_DIR|$DIR|g" "$DIR/$PLIST_NAME" > "$LAUNCH_AGENTS/$PLIST_NAME"
     launchctl unload "$LAUNCH_AGENTS/$PLIST_NAME" 2>/dev/null || true
     launchctl load  "$LAUNCH_AGENTS/$PLIST_NAME"
-    echo "Installed and started. WifiSignal will auto-start at login."
+    echo "Installed and started. Vitals will auto-start at login."
 else
-    echo "Run './WifiSignal &' to start, or 'bash build.sh --install' to auto-start at login."
+    echo "Run './Vitals &' to start, or 'bash build.sh --install' to auto-start at login."
 fi
