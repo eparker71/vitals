@@ -210,6 +210,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     let menu = NSMenu()
 
+    private var bwLastRx:   UInt64 = 0
+    private var bwLastTx:   UInt64 = 0
+    private var bwLastTime: Date   = .distantPast
+
     var wifiItems: [NSMenuItem] = []
     var cpuItems:  [NSMenuItem] = []
     var gpuItems:  [NSMenuItem] = []
@@ -233,7 +237,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildMenu() {
-        addSection("Wi-Fi",   rows: 7,                              into: &wifiItems)
+        addSection("Wi-Fi",   rows: 9,                              into: &wifiItems)
         sep()
         addSection("CPU",     rows: max(1, smc?.coreKeys.count ?? 1), into: &cpuItems)
         sep()
@@ -311,6 +315,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for (i, (label, value)) in rows.enumerated() {
             wifiItems[i].title = "  \(label): \(value)"
         }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(bwLastTime)
+        if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? ""),
+           bwLastTime != .distantPast, elapsed > 0, rx >= bwLastRx, tx >= bwLastTx {
+            let rxRate = Double(rx - bwLastRx) / elapsed
+            let txRate = Double(tx - bwLastTx) / elapsed
+            wifiItems[7].title = "  Download: \(formatBandwidth(rxRate))"
+            wifiItems[8].title = "  Upload:   \(formatBandwidth(txRate))"
+        } else {
+            wifiItems[7].title = "  Download: —"
+            wifiItems[8].title = "  Upload:   —"
+        }
+        if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? "") {
+            bwLastRx = rx; bwLastTx = tx; bwLastTime = now
+        }
+
         updateTitle(rssi: rssi, pct: pct, maxCoreTemp: nil)
     }
 
@@ -455,6 +476,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let out = NSMutableAttributedString(string: "  \(label): \(formatTemp(temp)) (\(pct)%) ")
         out.append(colorMeter(pct: pct, inverted: true))
         return out
+    }
+
+    private func interfaceBytesRxTx(_ name: String) -> (rx: UInt64, tx: UInt64)? {
+        var ifap: UnsafeMutablePointer<ifaddrs>? = nil
+        guard getifaddrs(&ifap) == 0 else { return nil }
+        defer { freeifaddrs(ifap) }
+        var p = ifap
+        while let cur = p {
+            defer { p = cur.pointee.ifa_next }
+            guard String(cString: cur.pointee.ifa_name) == name,
+                  let addr = cur.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_LINK),
+                  let data = cur.pointee.ifa_data else { continue }
+            let d = data.assumingMemoryBound(to: if_data.self).pointee
+            return (UInt64(d.ifi_ibytes), UInt64(d.ifi_obytes))
+        }
+        return nil
+    }
+
+    private func formatBandwidth(_ bytesPerSec: Double) -> String {
+        if bytesPerSec < 1_024         { return "< 1 KB/s" }
+        if bytesPerSec < 1_048_576     { return String(format: "%.0f KB/s", bytesPerSec / 1_024) }
+        return String(format: "%.1f MB/s", bytesPerSec / 1_048_576)
     }
 
     func rssiPercent(_ rssi: Int) -> Int {
