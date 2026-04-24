@@ -399,7 +399,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Row 0: temperature
         if let t = smc?.batteryTemperature() {
             let temp = Int(t.rounded())
-            batItems[0].attributedTitle = tempLine(label: "Temp", temp: temp, pct: cpuTempPercent(temp))
+            batItems[0].attributedTitle = tempLine(label: "Temp", temp: temp, pct: batteryTempPercent(temp))
         } else {
             batItems[0].title = "  Temp: unavailable"
             batItems[0].attributedTitle = nil
@@ -472,6 +472,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func cpuTempPercent(_ temp: Int) -> Int {
         let c = max(30, min(100, temp))
         return (c - 30) * 100 / 70
+    }
+
+    // 20°C (normal) = 0%, 50°C (hot) = 100%
+    func batteryTempPercent(_ temp: Int) -> Int {
+        let c = max(20, min(50, temp))
+        return (c - 20) * 100 / 30
     }
 
     func tempLine(label: String, temp: Int, pct: Int) -> NSAttributedString {
