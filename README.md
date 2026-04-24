@@ -26,6 +26,8 @@ Updates every 3 seconds:
   Channel:   153  5 GHz
   TX Rate:   243 Mbps
   Security:  WPA2
+  Download:  12.3 MB/s
+  Upload:    524 KB/s
   ───────────────────────────
   CPU
   Cluster 1: 46°C (23%) ■■□□□□□□□□
@@ -42,13 +44,15 @@ Updates every 3 seconds:
   Speed:     unavailable
   ───────────────────────────
   Battery
-  Temp:      28°C (0%)  □□□□□□□□□□
+  Temp:      84°F (30%) ■■■□□□□□□□
   Cycle count: 12
-  Capacity:  97% ■■■■■■■■■□
+  Charge:    100% ■■■■■■■■■■
   ───────────────────────────
   Power
   CPU package:   9.0 W
   System total:  9.8 W
+  ───────────────────────────
+  [✓] Use Fahrenheit
   ───────────────────────────
   Quit
 ```
@@ -81,11 +85,13 @@ Wi-Fi percentage maps RSSI to the practical range −90 dBm (0%) → −30 dBm (
 | −75 | 25%  | Weak |
 | −90 | 0%   | Unusable |
 
-CPU/GPU/memory temp percentage maps 30°C (idle, 0%) → 100°C (throttle point, 100%).
+CPU/GPU/memory temp percentage maps 30°C (idle, 0%) → 100°C (throttle, 100%). Battery temp uses a separate scale: 20°C (0%) → 50°C (100%).
+
+Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" menu item and persists across restarts.
 
 ## How it works
 
-All sensor data is read directly from the System Management Controller (SMC) via IOKit — no `sudo`, no third-party tools. Wi-Fi data comes from CoreWLAN.
+CPU/GPU/memory/fan data is read from the System Management Controller (SMC) via IOKit. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry (the same source macOS uses). Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
 
 ## Requirements
 
