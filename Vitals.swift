@@ -217,6 +217,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var fanItems:  [NSMenuItem] = []
     var batItems:  [NSMenuItem] = []
     var pwrItems:  [NSMenuItem] = []
+    let unitItem   = NSMenuItem()
+
+    var useFahrenheit: Bool {
+        get { UserDefaults.standard.bool(forKey: "useFahrenheit") }
+        set { UserDefaults.standard.set(newValue, forKey: "useFahrenheit") }
+    }
 
     let smc = SMCReader()
 
@@ -240,6 +246,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         addSection("Battery", rows: 3, into: &batItems)
         sep()
         addSection("Power",   rows: 2, into: &pwrItems)
+        sep()
+        unitItem.title  = "Use Fahrenheit"
+        unitItem.action = #selector(toggleTempUnit)
+        unitItem.state  = useFahrenheit ? .on : .off
+        menu.addItem(unitItem)
         sep()
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -417,12 +428,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         out.append(NSAttributedString(string: "\(lastRssi) dBm (\(lastPct)%) "))
         out.append(colorMeter(pct: lastPct, inverted: false, small: true))
         if let t = lastMaxTemp {
-            out.append(NSAttributedString(string: " │ \(t)°C"))
+            out.append(NSAttributedString(string: " │ \(formatTemp(t))"))
         }
         statusItem.button?.attributedTitle = out
     }
 
     // MARK: Shared helpers
+
+    @objc func toggleTempUnit() {
+        useFahrenheit.toggle()
+        unitItem.state = useFahrenheit ? .on : .off
+        refresh()
+    }
+
+    func formatTemp(_ celsius: Int) -> String {
+        useFahrenheit ? "\(celsius * 9 / 5 + 32)°F" : "\(celsius)°C"
+    }
 
     // 30°C (idle) = 0%, 100°C (throttle) = 100%
     func cpuTempPercent(_ temp: Int) -> Int {
@@ -431,7 +452,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func tempLine(label: String, temp: Int, pct: Int) -> NSAttributedString {
-        let out = NSMutableAttributedString(string: "  \(label): \(temp)°C (\(pct)%) ")
+        let out = NSMutableAttributedString(string: "  \(label): \(formatTemp(temp)) (\(pct)%) ")
         out.append(colorMeter(pct: pct, inverted: true))
         return out
     }
