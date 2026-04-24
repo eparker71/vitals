@@ -45,20 +45,30 @@ class SMCReader {
     // MARK: CPU cores
 
     private func detectCoreKeys() {
-        for i in 1...8 {
+        // Apple Silicon: Tp-style thermal cluster sensors (flt, little-endian)
+        let digits = "0123456789ABCDEF"
+        for hi in digits.map(String.init) {
+            for lo in digits.map(String.init) {
+                let key = "Tp\(hi)\(lo)"
+                if readTemp(key) != nil { coreKeys.append((label: "Cluster \(coreKeys.count + 1)", key: key)) }
+            }
+        }
+        if !coreKeys.isEmpty { return }
+        // Intel/older: TC-style per-core sensors (sp78), up to 16 cores
+        for i in 1...16 {
             let key = "TC\(i)C"
-            if keyIsReadableSP78(key) { coreKeys.append((label: "Core \(i)", key: key)) }
+            if readTemp(key) != nil { coreKeys.append((label: "Core \(i)", key: key)) }
         }
         if coreKeys.isEmpty {
             for key in ["TC0P", "TCXC", "TC0E"] {
-                if keyIsReadableSP78(key) { coreKeys.append((label: "CPU", key: key)); break }
+                if readTemp(key) != nil { coreKeys.append((label: "CPU", key: key)); break }
             }
         }
     }
 
     func coreTemperatures() -> [(label: String, temp: Double)] {
         coreKeys.compactMap { entry in
-            guard let t = readSP78(key: entry.key), t > 1, t < 125 else { return nil }
+            guard let t = readTemp(entry.key), t > 1, t < 125 else { return nil }
             return (entry.label, t)
         }.sorted { $0.temp > $1.temp }
     }
@@ -66,8 +76,8 @@ class SMCReader {
     // MARK: GPU
 
     func gpuTemperature() -> Double? {
-        for key in ["TG1D", "TCGC"] {
-            if let t = readSP78(key: key), t > 1, t < 125 { return t }
+        for key in ["Tg04", "Tg0C", "Tg0d", "TG1D", "TCGC"] {
+            if let t = readTemp(key) { return t }
         }
         return nil
     }
@@ -75,7 +85,10 @@ class SMCReader {
     // MARK: Memory
 
     func memoryTemperature() -> Double? {
-        readSP78(key: "TM0P")
+        for key in ["TM0P", "Tm0P", "TM0S"] {
+            if let t = readTemp(key) { return t }
+        }
+        return nil
     }
 
     // MARK: Fan — fpe2: value = raw_uint16 / 4.0
@@ -87,7 +100,7 @@ class SMCReader {
 
     func batteryTemperature() -> Double? {
         ["TB0T", "TB1T", "TB2T"]
-            .compactMap { readSP78(key: $0) }
+            .compactMap { readTemp($0) }
             .filter { $0 > 1 && $0 < 80 }
             .max()
     }
@@ -104,18 +117,12 @@ class SMCReader {
         return min(100, Int(Double(remaining) / Double(full) * 100))
     }
 
-    // MARK: Power — P* keys use sp78 encoding but represent watts
+    // MARK: Power — Intel: sp78, Apple Silicon: flt (little-endian)
 
-    func cpuPowerWatts() -> Double? { readSP78(key: "PCPC") }
-    func systemPowerWatts() -> Double? { readSP78(key: "PDTR") }
+    func cpuPowerWatts() -> Double? { readSP78(key: "PCPC") ?? readFlt("PSTR") }
+    func systemPowerWatts() -> Double? { readFlt("PDTR") ?? readSP78(key: "PDTR") }
 
     // MARK: Private read helpers
-
-    private func keyIsReadableSP78(_ key: String) -> Bool {
-        guard let info = getKeyInfo(key) else { return false }
-        return info.result == 0 && info.keyInfo.dataSize > 0
-            && dataTypeString(info.keyInfo.dataType) == "sp78"
-    }
 
     private func readSP78(key: String) -> Double? {
         guard let info = getKeyInfo(key),
@@ -126,6 +133,26 @@ class SMCReader {
         i.key = fourCC(key); i.keyInfo.dataSize = info.keyInfo.dataSize; i.data8 = 5
         guard callSMC(&i, &o) == kIOReturnSuccess else { return nil }
         return Double(o.bytes.0) + Double(o.bytes.1) / 256.0
+    }
+
+    // Apple Silicon SMC stores values as little-endian IEEE 754 float
+    private func readFlt(_ key: String) -> Double? {
+        guard let info = getKeyInfo(key),
+              info.result == 0,
+              info.keyInfo.dataSize == 4,
+              dataTypeString(info.keyInfo.dataType) == "flt " else { return nil }
+        var i = SMCParam(), o = SMCParam()
+        i.key = fourCC(key); i.keyInfo.dataSize = 4; i.data8 = 5
+        guard callSMC(&i, &o) == kIOReturnSuccess else { return nil }
+        let raw = UInt32(o.bytes.3) << 24 | UInt32(o.bytes.2) << 16 | UInt32(o.bytes.1) << 8 | UInt32(o.bytes.0)
+        return Double(Float(bitPattern: raw))
+    }
+
+    // Unified temperature reader: handles both sp78 (Intel) and flt (Apple Silicon)
+    private func readTemp(_ key: String) -> Double? {
+        if let t = readSP78(key: key) { return (t > 1 && t < 150) ? t : nil }
+        if let t = readFlt(key) { return (t > 1 && t < 150) ? t : nil }
+        return nil
     }
 
     private func readFPE2(key: String) -> Double? {
@@ -158,7 +185,7 @@ class SMCReader {
     }
 
     private func callSMC(_ input: inout SMCParam, _ output: inout SMCParam) -> IOReturn {
-        var inSize  = MemoryLayout<SMCParam>.stride
+        let inSize  = MemoryLayout<SMCParam>.stride
         var outSize = MemoryLayout<SMCParam>.stride
         return IOConnectCallStructMethod(conn, 2, &input, inSize, &output, &outSize)
     }

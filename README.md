@@ -1,6 +1,6 @@
 # Vitals
 
-A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signal strength, CPU core temps, GPU temp, memory temp, fan speed, battery health, and power draw — all from a single menu bar item with no Dock icon.
+A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signal strength, CPU temps, GPU temp, fan speed, battery health, and power draw — all from a single menu bar item with no Dock icon. Works on both Intel and Apple Silicon Macs.
 
 ## Menu bar
 
@@ -16,6 +16,7 @@ Updates every 3 seconds:
 
 ## Panel (click to expand)
 
+**Apple Silicon** (M-series — cluster-level sensors):
 ```
   Wi-Fi
   SSID:      MyNetwork
@@ -27,31 +28,45 @@ Updates every 3 seconds:
   Security:  WPA2
   ───────────────────────────
   CPU
-  Core 1:    58°C (40%) ■■■■□□□□□□
-  Core 2:    54°C (34%) ■■■■□□□□□□
+  Cluster 1: 46°C (23%) ■■□□□□□□□□
+  Cluster 2: 45°C (21%) ■■□□□□□□□□
+  Cluster 3: 44°C (20%) ■■□□□□□□□□
   ───────────────────────────
   GPU
-  Temp:      52°C (31%) ■■■■□□□□□□
+  Temp:      42°C (17%) ■■□□□□□□□□
+  ───────────────────────────
+  Memory
+  Temp:      unavailable
+  ───────────────────────────
+  Fan
+  Speed:     unavailable
+  ───────────────────────────
+  Battery
+  Temp:      28°C (0%)  □□□□□□□□□□
+  Cycle count: 12
+  Capacity:  97% ■■■■■■■■■□
+  ───────────────────────────
+  Power
+  CPU package:   9.0 W
+  System total:  9.8 W
+  ───────────────────────────
+  Quit
+```
+
+**Intel** (per-core sensors, fan, memory temp):
+```
+  CPU
+  Core 1:    58°C (40%) ■■■■□□□□□□
+  Core 2:    54°C (34%) ■■■■□□□□□□
   ───────────────────────────
   Memory
   Temp:      43°C (19%) ■■□□□□□□□□
   ───────────────────────────
   Fan
   Speed:     2200 RPM (35%) ■■■■□□□□□□
-  ───────────────────────────
-  Battery
-  Temp:      29°C (0%)  □□□□□□□□□□
-  Cycle count: 88
-  Capacity:  100% ■■■■■■■■■■
-  ───────────────────────────
-  Power
-  CPU package:   16.1 W
-  System total:  35.9 W
-  ───────────────────────────
-  Quit
 ```
 
-CPU cores are sorted hottest-first and detected dynamically, so it works on any Intel Mac regardless of core count.
+Sensors are detected dynamically at startup — the app adapts to whatever the SMC exposes. Sections with no available sensor show "unavailable" rather than disappearing.
 
 ## Signal scale
 
@@ -74,8 +89,8 @@ All sensor data is read directly from the System Management Controller (SMC) via
 
 ## Requirements
 
-- macOS (tested on macOS 15 Sequoia)
-- Intel Mac (SMC key names differ on Apple Silicon — PRs welcome)
+- macOS (tested on macOS 15 Sequoia and macOS 26 Tahoe)
+- Intel or Apple Silicon Mac (M1–M5 tested)
 - Xcode Command Line Tools: `xcode-select --install`
 
 ## Build & run
