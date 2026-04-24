@@ -105,16 +105,20 @@ class SMCReader {
             .max()
     }
 
-    func batteryCycles() -> Int? {
-        readUI16(key: "B0CT").map { Int($0) }
-    }
-
-    // Returns 0–100
-    func batteryCapacityPct() -> Int? {
-        guard let remaining = readUI16(key: "B0RM"),
-              let full      = readUI16(key: "B0FC"),
-              full > 0 else { return nil }
-        return min(100, Int(Double(remaining) / Double(full) * 100))
+    // charge% and cycle count from the AppleSmartBattery registry entry
+    // (more reliable than raw SMC keys whose units vary across chip generations)
+    func batteryRegistryInfo() -> (chargePct: Int, cycles: Int?)? {
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault,
+                                             IOServiceMatching("AppleSmartBattery"))
+        guard svc != 0 else { return nil }
+        defer { IOObjectRelease(svc) }
+        var props: Unmanaged<CFMutableDictionary>? = nil
+        guard IORegistryEntryCreateCFProperties(svc, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+              let dict   = props?.takeRetainedValue() as? [String: Any],
+              let current = dict["CurrentCapacity"] as? Int,
+              let max     = dict["MaxCapacity"]     as? Int,
+              max > 0 else { return nil }
+        return (min(100, current * 100 / max), dict["CycleCount"] as? Int)
     }
 
     // MARK: Power — Intel: sp78, Apple Silicon: flt (little-endian)
@@ -395,26 +399,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Row 0: temperature
         if let t = smc?.batteryTemperature() {
             let temp = Int(t.rounded())
-            let pct  = cpuTempPercent(temp)
-            batItems[0].attributedTitle = tempLine(label: "Temp", temp: temp, pct: pct)
+            batItems[0].attributedTitle = tempLine(label: "Temp", temp: temp, pct: cpuTempPercent(temp))
         } else {
             batItems[0].title = "  Temp: unavailable"
             batItems[0].attributedTitle = nil
         }
-        // Row 1: cycle count
-        if let cycles = smc?.batteryCycles() {
+        // Rows 1 & 2: cycle count and charge level from IOKit registry
+        let info = smc?.batteryRegistryInfo()
+        if let cycles = info?.cycles {
             batItems[1].title = "  Cycle count: \(cycles)"
         } else {
             batItems[1].title = "  Cycle count: unavailable"
         }
-        // Row 2: capacity
-        if let pct = smc?.batteryCapacityPct() {
-            let out = NSMutableAttributedString(string: "  Capacity: \(pct)% ")
-            // Green = high capacity, red = degraded (inverted=false like WiFi)
+        if let pct = info?.chargePct {
+            let out = NSMutableAttributedString(string: "  Charge: \(pct)% ")
             out.append(colorMeter(pct: pct, inverted: false))
             batItems[2].attributedTitle = out
         } else {
-            batItems[2].title = "  Capacity: unavailable"
+            batItems[2].title = "  Charge: unavailable"
             batItems[2].attributedTitle = nil
         }
     }
