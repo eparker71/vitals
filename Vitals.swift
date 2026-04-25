@@ -105,6 +105,13 @@ class SMCReader {
             .max()
     }
 
+    func storageTemperature() -> Double? {
+        for key in ["Ts0S", "Ts0P", "TH0A", "TH0P"] {
+            if let t = readTemp(key) { return t }
+        }
+        return nil
+    }
+
     // charge% and cycle count from the AppleSmartBattery registry entry
     // (more reliable than raw SMC keys whose units vary across chip generations)
     func batteryRegistryInfo() -> (chargePct: Int, cycles: Int?)? {
@@ -207,6 +214,197 @@ class SMCReader {
     }
 }
 
+// MARK: - Disk reader
+
+struct DiskInfo {
+    var name: String = "Unknown"
+    var smartStatus: String? = nil
+    var bytesRead: UInt64? = nil
+    var bytesWritten: UInt64? = nil
+}
+
+struct DiskReader {
+    func read() -> DiskInfo? {
+        var iter: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                          IOServiceMatching("IOBlockStorageDriver"),
+                                          &iter) == kIOReturnSuccess else { return nil }
+        defer { IOObjectRelease(iter) }
+
+        var svc = IOIteratorNext(iter)
+        while svc != 0 {
+            defer { IOObjectRelease(svc); svc = IOIteratorNext(iter) }
+            var info = DiskInfo()
+
+            var dProps: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(svc, &dProps, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+               let dict  = dProps?.takeRetainedValue() as? [String: Any],
+               let stats = dict["Statistics"] as? [String: Any] {
+                info.bytesRead    = uint64(stats["Bytes (Read)"])
+                info.bytesWritten = uint64(stats["Bytes (Write)"])
+            }
+            guard info.bytesRead != nil || info.bytesWritten != nil else { continue }
+
+            // Direct child: SATA/third-party NVMe devices expose Product Name and SMART here
+            var childIter: io_iterator_t = 0
+            if IORegistryEntryGetChildIterator(svc, kIOServicePlane, &childIter) == kIOReturnSuccess {
+                defer { IOObjectRelease(childIter) }
+                var child = IOIteratorNext(childIter)
+                while child != 0 {
+                    defer { IOObjectRelease(child); child = IOIteratorNext(childIter) }
+                    var cp: Unmanaged<CFMutableDictionary>?
+                    guard IORegistryEntryCreateCFProperties(child, &cp, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+                          let cd = cp?.takeRetainedValue() as? [String: Any] else { continue }
+                    for key in ["Product Name", "Device Model", "Model"] {
+                        if let n = cd[key] as? String, !n.trimmingCharacters(in: .whitespaces).isEmpty {
+                            info.name = n.trimmingCharacters(in: .whitespaces); break
+                        }
+                    }
+                    if let s = cd["SMART Status"] as? String { info.smartStatus = s }
+                }
+            }
+
+            // Walk up the parent chain — Apple Silicon NVMe controller stores "Model Number" here
+            if info.name == "Unknown" {
+                let upOpts = IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)
+                for key in ["Model Number", "Product Name", "Device Model"] {
+                    guard let val = IORegistryEntrySearchCFProperty(
+                            svc, kIOServicePlane, key as CFString, kCFAllocatorDefault, upOpts)
+                    else { continue }
+                    let s: String?
+                    if let str = val as? String {
+                        s = str
+                    } else if let data = val as? Data {
+                        s = String(bytes: data, encoding: .utf8)
+                    } else {
+                        s = nil
+                    }
+                    if let name = s?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+                        info.name = name; break
+                    }
+                }
+            }
+
+            return info
+        }
+        return nil
+    }
+
+    private func uint64(_ v: Any?) -> UInt64? {
+        if let n = v as? UInt64 { return n }
+        if let n = v as? Int    { return UInt64(max(0, n)) }
+        if let n = v as? Int64  { return n >= 0 ? UInt64(n) : nil }
+        return nil
+    }
+}
+
+// MARK: - Disk graph view
+
+fileprivate class DiskGraphView: NSView {
+    private struct Sample { var read: Double; var write: Double }
+    private static let cap = 40
+    private var samples: [Sample] = []
+    var latestRead:  Double = 0
+    var latestWrite: Double = 0
+
+    init() { super.init(frame: NSRect(x: 0, y: 0, width: 260, height: 76)) }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }  // y=0 at top, increases downward
+
+    func push(read: Double, write: Double) {
+        latestRead = read; latestWrite = write
+        samples.append(Sample(read: read, write: write))
+        if samples.count > Self.cap { samples.removeFirst() }
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let W = bounds.width, H = bounds.height
+        let mg: CGFloat = 33             // matches standard menu item text indentation (includes checkmark column)
+
+        // Label strip at top (y increases downward in flipped view)
+        let lbH: CGFloat = 28
+        // Graph area below labels
+        let gTop: CGFloat = lbH + 2
+        let gBot: CGFloat = H - 4
+        let gH   = gBot - gTop
+        let midY = gTop + gH / 2
+
+        // dotted center line
+        let lp = NSBezierPath()
+        lp.move(to: NSPoint(x: mg, y: midY))
+        lp.line(to: NSPoint(x: W - mg, y: midY))
+        lp.lineWidth = 0.75
+        lp.setLineDash([3, 3], count: 2, phase: 0)
+        NSColor(red: 0.65, green: 0.35, blue: 0.82, alpha: 0.55).setStroke()
+        lp.stroke()
+
+        let maxVal = max(65_536, samples.flatMap { [$0.read, $0.write] }.max() ?? 1)
+        let halfH  = gH / 2
+        let barW: CGFloat = 5, step: CGFloat = 6
+
+        for (i, s) in samples.reversed().enumerated() {
+            let x = W - mg - CGFloat(i) * step - barW
+            if x < mg { break }
+            let rh = CGFloat(s.read  / maxVal) * halfH
+            let wh = CGFloat(s.write / maxVal) * halfH
+            NSColor.systemPink.withAlphaComponent(0.88).setFill()
+            NSBezierPath(rect: NSRect(x: x, y: midY - rh, width: barW, height: rh)).fill()
+            NSColor.systemBlue.withAlphaComponent(0.88).setFill()
+            NSBezierPath(rect: NSRect(x: x, y: midY,      width: barW, height: wh)).fill()
+        }
+
+        let half = (W - mg * 2) / 2
+        drawMetric(fmt(latestRead),  sub: "Read",
+                   in: NSRect(x: mg,        y: 4, width: half, height: lbH))
+        drawMetric(fmt(latestWrite), sub: "Write",
+                   in: NSRect(x: mg + half, y: 4, width: half, height: lbH))
+    }
+
+    private func drawMetric(_ val: String, sub: String, in r: NSRect) {
+        NSAttributedString(string: val, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.labelColor
+        ]).draw(at: NSPoint(x: r.minX, y: r.minY))
+        NSAttributedString(string: sub, attributes: [
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]).draw(at: NSPoint(x: r.minX, y: r.minY + 15))
+    }
+
+    private func fmt(_ bps: Double) -> String {
+        guard bps >= 1_024 else { return "—" }
+        if bps < 1_048_576     { return String(format: "%.0f KB/s", bps / 1_024) }
+        if bps < 1_073_741_824 { return String(format: "%.1f MB/s", bps / 1_048_576) }
+        return String(format: "%.1f GB/s", bps / 1_073_741_824)
+    }
+}
+
+// MARK: - Collapse header view
+
+private class CollapseHeader: NSView {
+    let label: String
+    var isCollapsed: Bool = false { didSet { needsDisplay = true } }
+    var onTap: (() -> Void)?
+
+    init(label: String) {
+        self.label = label
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 17))
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseUp(with event: NSEvent) { onTap?() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let arrow = isCollapsed ? "▶" : "▼"
+        let str = NSAttributedString(string: "  \(arrow) \(label)", attributes: [
+            .font: NSFont.boldSystemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ])
+        str.draw(at: NSPoint(x: 0, y: (bounds.height - str.size().height) / 2))
+    }
+}
+
 // MARK: - App
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -218,6 +416,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var bwLastTx:   UInt64 = 0
     private var bwLastTime: Date   = .distantPast
 
+    let wifiHeader     = NSMenuItem()
+    let cpuHeader      = NSMenuItem()
+    let batHeader      = NSMenuItem()
+    let diskHeader     = NSMenuItem()
+    let wifiSummary    = NSMenuItem()
+    let cpuSummary     = NSMenuItem()
+    let batSummary     = NSMenuItem()
+    fileprivate let wifiHeaderView = CollapseHeader(label: "Wi-Fi")
+    fileprivate let cpuHeaderView  = CollapseHeader(label: "CPU")
+    fileprivate let batHeaderView  = CollapseHeader(label: "Battery")
+    fileprivate let diskHeaderView = CollapseHeader(label: "Disk")
+
+    var wifiCollapsed: Bool {
+        get { UserDefaults.standard.bool(forKey: "wifiCollapsed") }
+        set { UserDefaults.standard.set(newValue, forKey: "wifiCollapsed") }
+    }
+    var cpuCollapsed: Bool {
+        get { UserDefaults.standard.bool(forKey: "cpuCollapsed") }
+        set { UserDefaults.standard.set(newValue, forKey: "cpuCollapsed") }
+    }
+    var batCollapsed: Bool {
+        get { UserDefaults.standard.bool(forKey: "batCollapsed") }
+        set { UserDefaults.standard.set(newValue, forKey: "batCollapsed") }
+    }
+    var diskCollapsed: Bool {
+        get { UserDefaults.standard.bool(forKey: "diskCollapsed") }
+        set { UserDefaults.standard.set(newValue, forKey: "diskCollapsed") }
+    }
+
     var wifiItems: [NSMenuItem] = []
     var cpuItems:  [NSMenuItem] = []
     var gpuItems:  [NSMenuItem] = []
@@ -225,6 +452,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var fanItems:  [NSMenuItem] = []
     var batItems:  [NSMenuItem] = []
     var pwrItems:  [NSMenuItem] = []
+    var diskItems: [NSMenuItem] = []
+
+    let diskReader    = DiskReader()
+    fileprivate let diskGraph = DiskGraphView()
+    let diskGraphItem = NSMenuItem()
+    private var diskLastRx:   UInt64 = 0
+    private var diskLastTx:   UInt64 = 0
+    private var diskLastTime: Date   = .distantPast
     let unitItem   = NSMenuItem()
 
     var useFahrenheit: Bool {
@@ -241,9 +476,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildMenu() {
-        addSection("Wi-Fi",   rows: 9,                              into: &wifiItems)
+        addCollapsible(header: wifiHeader, view: wifiHeaderView, summary: wifiSummary,
+                       rows: 9, collapsed: wifiCollapsed,
+                       onToggle: { [weak self] in self?.toggleWifi() }, into: &wifiItems)
         sep()
-        addSection("CPU",     rows: max(1, smc?.coreKeys.count ?? 1), into: &cpuItems)
+        addCollapsible(header: cpuHeader, view: cpuHeaderView, summary: cpuSummary,
+                       rows: max(1, smc?.coreKeys.count ?? 1), collapsed: cpuCollapsed,
+                       onToggle: { [weak self] in self?.toggleCPU() }, into: &cpuItems)
         sep()
         addSection("GPU",     rows: 1, into: &gpuItems)
         sep()
@@ -251,9 +490,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sep()
         addSection("Fan",     rows: 1, into: &fanItems)
         sep()
-        addSection("Battery", rows: 3, into: &batItems)
+        addCollapsible(header: batHeader, view: batHeaderView, summary: batSummary,
+                       rows: 3, collapsed: batCollapsed,
+                       onToggle: { [weak self] in self?.toggleBat() }, into: &batItems)
         sep()
         addSection("Power",   rows: 2, into: &pwrItems)
+        sep()
+        // Disk section — graph always visible, metadata rows toggle on collapse
+        diskHeaderView.isCollapsed = diskCollapsed
+        diskHeaderView.onTap = { [weak self] in self?.toggleDisk() }
+        diskHeader.view = diskHeaderView
+        menu.addItem(diskHeader)
+        for _ in 0..<3 { let it = NSMenuItem(); diskItems.append(it); menu.addItem(it) }
+        diskGraphItem.view = diskGraph
+        menu.addItem(diskGraphItem)
+        for _ in 0..<2 { let it = NSMenuItem(); diskItems.append(it); menu.addItem(it) }
+        diskItems.forEach { $0.isHidden = diskCollapsed }
         sep()
         unitItem.title  = "Use Fahrenheit"
         unitItem.action = #selector(toggleTempUnit)
@@ -278,6 +530,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func addCollapsible(header: NSMenuItem, view: CollapseHeader, summary: NSMenuItem,
+                                rows: Int, collapsed: Bool, onToggle: @escaping () -> Void,
+                                into items: inout [NSMenuItem]) {
+        view.isCollapsed = collapsed
+        view.onTap = onToggle
+        header.view = view
+        menu.addItem(header)
+        menu.addItem(summary)
+        for _ in 0..<rows {
+            let item = NSMenuItem(); items.append(item); menu.addItem(item)
+        }
+        applyCollapse(summary: summary, details: items, collapsed: collapsed)
+    }
+
+    private func applyCollapse(summary: NSMenuItem, details: [NSMenuItem], collapsed: Bool) {
+        summary.isHidden = !collapsed
+        details.forEach { $0.isHidden = collapsed }
+    }
+
     private func sectionHeader(_ title: String) -> NSAttributedString {
         NSAttributedString(string: "  \(title)", attributes: [
             .font: NSFont.boldSystemFont(ofSize: NSFont.smallSystemFontSize),
@@ -295,13 +566,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         refreshFan()
         refreshBattery()
         refreshPower()
+        refreshDisk()
     }
 
     // MARK: Wi-Fi
 
     func refreshWifi() {
         guard let iface = CWWiFiClient.shared().interface() else {
-            statusItem.button?.title = "No WiFi"; return
+            statusItem.button?.title = "No WiFi"
+            wifiSummary.title = "  No WiFi"; wifiSummary.attributedTitle = nil
+            return
         }
         let rssi  = iface.rssiValue()
         let noise = iface.noiseMeasurement()
@@ -309,15 +583,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let rows: [(String, String)] = [
             ("SSID",     iface.ssid() ?? "—"),
-            ("Signal",   "\(rssi) dBm  →  \(pct)%"),
             ("Noise",    "\(noise) dBm"),
             ("SNR",      "\(rssi - noise) dB  \(snrLabel(rssi - noise))"),
             ("Channel",  "\(iface.wlanChannel()?.channelNumber ?? 0)  \(iface.wlanChannel().map { bandLabel($0) } ?? "—")"),
             ("TX Rate",  "\(Int(iface.transmitRate())) Mbps"),
             ("Security", iface.security().label),
         ]
+        wifiItems[0].title = "  SSID: \(iface.ssid() ?? "—")"
+        let sigOut = NSMutableAttributedString(string: "  Signal: \(rssi) dBm  (\(pct)%) ")
+        sigOut.append(colorMeter(pct: pct, inverted: false))
+        wifiItems[1].attributedTitle = sigOut
         for (i, (label, value)) in rows.enumerated() {
-            wifiItems[i].title = "  \(label): \(value)"
+            wifiItems[i + 2].title = "  \(label): \(value)"
         }
 
         let now = Date()
@@ -336,6 +613,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             bwLastRx = rx; bwLastTx = tx; bwLastTime = now
         }
 
+        let sumOut = NSMutableAttributedString(string: "  \(iface.ssid() ?? "—")  \(pct)% ")
+        sumOut.append(colorMeter(pct: pct, inverted: false))
+        wifiSummary.attributedTitle = sumOut
+
         updateTitle(rssi: rssi, pct: pct, maxCoreTemp: nil)
     }
 
@@ -346,11 +627,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if cores.isEmpty {
             cpuItems[0].title = "  Temp: unavailable"
             cpuItems[0].attributedTitle = nil
+            cpuSummary.title = "  Temp: unavailable"; cpuSummary.attributedTitle = nil
         } else {
             for (i, core) in cores.enumerated() {
                 let t = Int(core.temp.rounded())
                 cpuItems[i].attributedTitle = tempLine(label: core.label, temp: t, pct: cpuTempPercent(t))
             }
+            let maxT = Int(cores[0].temp.rounded())
+            cpuSummary.attributedTitle = tempLine(label: "Temp", temp: maxT, pct: cpuTempPercent(maxT))
         }
         updateTitle(rssi: nil, pct: nil, maxCoreTemp: cores.first.map { Int($0.temp.rounded()) })
     }
@@ -415,9 +699,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let out = NSMutableAttributedString(string: "  Charge: \(pct)% ")
             out.append(colorMeter(pct: pct, inverted: false))
             batItems[2].attributedTitle = out
+            let sum = NSMutableAttributedString(string: "  Charge: \(pct)% ")
+            sum.append(colorMeter(pct: pct, inverted: false))
+            batSummary.attributedTitle = sum
         } else {
             batItems[2].title = "  Charge: unavailable"
             batItems[2].attributedTitle = nil
+            batSummary.title = "  Charge: unavailable"
+            batSummary.attributedTitle = nil
         }
     }
 
@@ -434,6 +723,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             pwrItems[1].title = "  System total: unavailable"
         }
+    }
+
+    // MARK: Disk
+
+    func refreshDisk() {
+        let info = diskReader.read()
+        diskItems[0].title = "  Drive:      \(info?.name ?? "unavailable")"
+        diskItems[1].title = "  S.M.A.R.T.: \(info?.smartStatus ?? "—")"
+        if let t = smc?.storageTemperature() {
+            let temp = Int(t.rounded())
+            diskItems[2].attributedTitle = tempLine(label: "Temp", temp: temp, pct: diskTempPercent(temp))
+        } else {
+            diskItems[2].title = "  Temp: —"
+            diskItems[2].attributedTitle = nil
+        }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(diskLastTime)
+        var readRate: Double = 0, writeRate: Double = 0
+        if let rx = info?.bytesRead, let tx = info?.bytesWritten,
+           diskLastTime != .distantPast, elapsed > 0, rx >= diskLastRx, tx >= diskLastTx {
+            readRate  = Double(rx - diskLastRx) / elapsed
+            writeRate = Double(tx - diskLastTx) / elapsed
+        }
+        if let rx = info?.bytesRead, let tx = info?.bytesWritten {
+            diskLastRx = rx; diskLastTx = tx; diskLastTime = now
+        }
+        diskGraph.push(read: readRate, write: writeRate)
+
+        diskItems[3].title = "  Lifetime read:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
+        diskItems[4].title = "  Lifetime written: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
+    }
+
+    // 20°C (idle) = 0%, 60°C (hot) = 100%
+    func diskTempPercent(_ temp: Int) -> Int {
+        let c = max(20, min(60, temp))
+        return (c - 20) * 100 / 40
+    }
+
+    private func formatDiskBytes(_ bytes: UInt64) -> String {
+        let tb = Double(bytes) / 1e12
+        let gb = Double(bytes) / 1e9
+        if tb >= 1 { return String(format: "%.1f TB", tb) }
+        return String(format: "%.0f GB", gb)
     }
 
     // MARK: Title bar
@@ -457,6 +790,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: Shared helpers
+
+    func toggleDisk() {
+        diskCollapsed.toggle()
+        diskHeaderView.isCollapsed = diskCollapsed
+        diskItems.forEach { $0.isHidden = diskCollapsed }
+    }
+
+    func toggleBat() {
+        batCollapsed.toggle()
+        batHeaderView.isCollapsed = batCollapsed
+        applyCollapse(summary: batSummary, details: batItems, collapsed: batCollapsed)
+    }
+
+    func toggleWifi() {
+        wifiCollapsed.toggle()
+        wifiHeaderView.isCollapsed = wifiCollapsed
+        applyCollapse(summary: wifiSummary, details: wifiItems, collapsed: wifiCollapsed)
+    }
+
+    func toggleCPU() {
+        cpuCollapsed.toggle()
+        cpuHeaderView.isCollapsed = cpuCollapsed
+        applyCollapse(summary: cpuSummary, details: cpuItems, collapsed: cpuCollapsed)
+    }
 
     @objc func toggleTempUnit() {
         useFahrenheit.toggle()

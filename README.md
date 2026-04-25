@@ -1,6 +1,6 @@
 # Vitals
 
-A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signal strength, CPU temps, GPU temp, fan speed, battery health, and power draw — all from a single menu bar item with no Dock icon. Works on both Intel and Apple Silicon Macs.
+A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signal, CPU/GPU temps, fan speed, battery health, disk activity, and power draw — all from a single menu bar item with no Dock icon. Works on both Intel and Apple Silicon Macs.
 
 ## Menu bar
 
@@ -11,16 +11,18 @@ Updates every 3 seconds:
 ```
 
 - **Wi-Fi**: RSSI in dBm, percentage, color meter
-- **CPU**: hottest core temperature
-- Meter squares are color-coded: red → yellow → green (WiFi) / green → yellow → red (heat)
+- **CPU**: hottest core/cluster temperature
+- Meter squares are color-coded: red → yellow → green (Wi-Fi signal) / green → yellow → red (heat)
 
 ## Panel (click to expand)
 
+Sections marked **▼** are collapsible — click the header to collapse to a single summary row, click again to expand. Collapsed state persists across restarts.
+
 **Apple Silicon** (M-series — cluster-level sensors):
 ```
-  Wi-Fi
+  ▼ Wi-Fi                          ← click to collapse (shows SSID + signal meter)
   SSID:      MyNetwork
-  Signal:    -56 dBm  →  57%
+  Signal:    -56 dBm  (57%) ■■■■■■□□□□
   Noise:     -88 dBm
   SNR:       32 dB  (excellent)
   Channel:   153  5 GHz
@@ -29,7 +31,7 @@ Updates every 3 seconds:
   Download:  12.3 MB/s
   Upload:    524 KB/s
   ───────────────────────────
-  CPU
+  ▼ CPU                            ← click to collapse (shows hottest temp + meter)
   Cluster 1: 46°C (23%) ■■□□□□□□□□
   Cluster 2: 45°C (21%) ■■□□□□□□□□
   Cluster 3: 44°C (20%) ■■□□□□□□□□
@@ -43,7 +45,7 @@ Updates every 3 seconds:
   Fan
   Speed:     unavailable
   ───────────────────────────
-  Battery
+  ▼ Battery                        ← click to collapse (shows charge + meter)
   Temp:      84°F (30%) ■■■□□□□□□□
   Cycle count: 12
   Charge:    100% ■■■■■■■■■■
@@ -51,6 +53,14 @@ Updates every 3 seconds:
   Power
   CPU package:   9.0 W
   System total:  9.8 W
+  ───────────────────────────
+  ▼ Disk                           ← click to collapse (shows graph only)
+  Drive:      APPLE SSD AP0512Z
+  S.M.A.R.T.: Verified
+  Temp:       77°F (12%) ■□□□□□□□□□
+  [read/write bar graph]
+  Lifetime read:    26 GB
+  Lifetime written: 9 GB
   ───────────────────────────
   [✓] Use Fahrenheit
   ───────────────────────────
@@ -72,6 +82,16 @@ Updates every 3 seconds:
 
 Sensors are detected dynamically at startup — the app adapts to whatever the SMC exposes. Sections with no available sensor show "unavailable" rather than disappearing.
 
+## Disk graph
+
+The Disk section includes a live read/write bar graph that retains ~2 minutes of history:
+
+- **Pink bars** (upward) — read rate
+- **Blue bars** (downward) — write rate
+- Bars are auto-scaled to the maximum visible value (floor: 64 KB/s)
+- Current read/write rates are shown above the graph
+- Lifetime bytes read/written shown below
+
 ## Signal scale
 
 Wi-Fi percentage maps RSSI to the practical range −90 dBm (0%) → −30 dBm (100%):
@@ -85,13 +105,13 @@ Wi-Fi percentage maps RSSI to the practical range −90 dBm (0%) → −30 dBm (
 | −75 | 25%  | Weak |
 | −90 | 0%   | Unusable |
 
-CPU/GPU/memory temp percentage maps 30°C (idle, 0%) → 100°C (throttle, 100%). Battery temp uses a separate scale: 20°C (0%) → 50°C (100%).
+CPU/GPU/memory temp percentage maps 30°C (idle, 0%) → 100°C (throttle, 100%). Battery temp uses a separate scale: 20°C (0%) → 50°C (100%). Disk temp uses 20°C (0%) → 60°C (100%).
 
 Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" menu item and persists across restarts.
 
 ## How it works
 
-CPU/GPU/memory/fan data is read from the System Management Controller (SMC) via IOKit. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry (the same source macOS uses). Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
+CPU/GPU/memory/fan/disk-temp data is read from the System Management Controller (SMC) via IOKit. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and lifetime bytes come from `IOBlockStorageDriver` and its parent NVMe controller. Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
 
 ## Requirements
 
