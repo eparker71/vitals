@@ -10,8 +10,17 @@ swiftc "$DIR/Vitals.swift" \
     -framework Cocoa \
     -framework CoreWLAN \
     -framework IOKit \
-    -o "$OUT"
-echo "Built → $OUT"
+    -target arm64-apple-macosx12.0 \
+    -o "$DIR/Vitals-arm64"
+swiftc "$DIR/Vitals.swift" \
+    -framework Cocoa \
+    -framework CoreWLAN \
+    -framework IOKit \
+    -target x86_64-apple-macosx12.0 \
+    -o "$DIR/Vitals-x86_64"
+lipo -create -output "$OUT" "$DIR/Vitals-arm64" "$DIR/Vitals-x86_64"
+rm "$DIR/Vitals-arm64" "$DIR/Vitals-x86_64"
+echo "Built universal binary → $OUT"
 
 if [[ "$1" == "--install" ]]; then
     echo "Installing LaunchAgent…"

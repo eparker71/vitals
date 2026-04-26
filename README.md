@@ -139,9 +139,10 @@ Two timers run independently: graphs (Wi-Fi bandwidth, disk I/O) refresh every 1
 
 ## Requirements
 
-- macOS (tested on macOS 15 Sequoia and macOS 26 Tahoe)
-- Intel or Apple Silicon Mac (M1–M5 tested)
+- macOS 12 Monterey or later (Intel or Apple Silicon)
 - Xcode Command Line Tools: `xcode-select --install`
+
+The binary built by `build.sh` is a universal binary (x86_64 + arm64) and runs natively on both Intel and Apple Silicon Macs. GPU utilization metrics require Apple Silicon; on Intel Macs those rows show "unavailable" while all other sensors work normally.
 
 ## Build & run
 
