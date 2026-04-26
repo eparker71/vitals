@@ -12,9 +12,5 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/vitals.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/vitals.log</string>
 </dict>
 </plist>

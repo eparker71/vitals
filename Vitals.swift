@@ -1,6 +1,10 @@
 import Cocoa
 import CoreWLAN
 import IOKit
+import os
+
+private let kAppVersion = "1.0.0"
+private let logger = Logger(subsystem: "com.eric.vitals", category: "app")
 
 // MARK: - SMC reader (IOKit, no sudo required)
 
@@ -444,6 +448,24 @@ private extension NSTextField {
     }
 }
 
+// MARK: - Row index constants
+
+private enum WifiRow {
+    static let ssid=0, signal=1, noise=2, snr=3, channel=4, txRate=5, security=6, download=7, upload=8
+}
+private enum GpuRow {
+    static let temp=0, device=1, renderer=2, tiler=3
+}
+private enum BatRow {
+    static let temp=0, cycles=1, charge=2
+}
+private enum PwrRow {
+    static let cpu=0, system=1
+}
+private enum DiskRow {
+    static let drive=0, smart=1, temp=2, lifetimeRead=3, lifetimeWritten=4
+}
+
 // MARK: - App
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -526,6 +548,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var diskLastRx:   UInt64 = 0
     private var diskLastTx:   UInt64 = 0
     private var diskLastTime: Date   = .distantPast
+    private var cachedDiskInfo: DiskInfo?
     let tempUnitButton = NSButton()
 
     var useFahrenheit: Bool {
@@ -536,11 +559,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let smc = SMCReader()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSSetUncaughtExceptionHandler { exception in
+            logger.fault("Uncaught exception — name: \(exception.name.rawValue, privacy: .public), reason: \(exception.reason ?? "none", privacy: .public)")
+        }
+        logger.info("Vitals \(kAppVersion, privacy: .public) starting")
+        if smc == nil { logger.error("SMC unavailable — thermal/power metrics will be missing") }
         buildPopover()
         refresh()
         refreshGraphs()
-        timer      = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in self.refresh() }
-        graphTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in self.refreshGraphs() }
+        timer      = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in self?.refresh() }
+        graphTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.refreshGraphs() }
     }
 
     func buildPopover() {
@@ -597,6 +625,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         tempUnitButton.translatesAutoresizingMaskIntoConstraints = false
         stackView.addArrangedSubview(tempUnitButton)
         sep()
+
+        let versionLabel = NSTextField(labelWithString: "  Vitals \(kAppVersion)")
+        versionLabel.font = NSFont.systemFont(ofSize: 9)
+        versionLabel.textColor = NSColor.tertiaryLabelColor
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(versionLabel)
 
         // Close / Quit
         let closeBtn = NSButton(title: "Close", target: self,
@@ -745,22 +779,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let rssi  = iface.rssiValue()
         let noise = iface.noiseMeasurement()
         let pct   = rssiPercent(rssi)
+        let ch    = iface.wlanChannel()
 
-        let rows: [(String, String)] = [
-            ("SSID",     iface.ssid() ?? "—"),
-            ("Noise",    "\(noise) dBm"),
-            ("SNR",      "\(rssi - noise) dB  \(snrLabel(rssi - noise))"),
-            ("Channel",  "\(iface.wlanChannel()?.channelNumber ?? 0)  \(iface.wlanChannel().map { bandLabel($0) } ?? "—")"),
-            ("TX Rate",  "\(Int(iface.transmitRate())) Mbps"),
-            ("Security", iface.security().label),
-        ]
-        wifiItems[0].title = "  SSID: \(iface.ssid() ?? "—")"
+        wifiItems[WifiRow.ssid].title = "  SSID: \(iface.ssid() ?? "—")"
         let sigOut = NSMutableAttributedString(string: "  Signal: \(rssi) dBm  (\(pct)%) ")
         sigOut.append(colorMeter(pct: pct, inverted: false))
-        wifiItems[1].attributedTitle = sigOut
-        for (i, (label, value)) in rows.enumerated() {
-            wifiItems[i + 2].title = "  \(label): \(value)"
-        }
+        wifiItems[WifiRow.signal].attributedTitle = sigOut
+        wifiItems[WifiRow.noise].title    = "  Noise: \(noise) dBm"
+        wifiItems[WifiRow.snr].title      = "  SNR: \(rssi - noise) dB  \(snrLabel(rssi - noise))"
+        wifiItems[WifiRow.channel].title  = "  Channel: \(ch?.channelNumber ?? 0)  \(ch.map { bandLabel($0) } ?? "—")"
+        wifiItems[WifiRow.txRate].title   = "  TX Rate: \(Int(iface.transmitRate())) Mbps"
+        wifiItems[WifiRow.security].title = "  Security: \(iface.security().label)"
 
         let sumOut = NSMutableAttributedString(string: "  \(iface.ssid() ?? "—")  \(pct)% ")
         sumOut.append(colorMeter(pct: pct, inverted: false))
@@ -794,11 +823,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = smc?.gpuTemperature() {
             let temp = Int(t.rounded())
             let line = tempLine(label: "Temp", temp: temp, pct: cpuTempPercent(temp))
-            gpuItems[0].attributedTitle = line
+            gpuItems[GpuRow.temp].attributedTitle = line
             gpuSummary.attributedTitle = line
         } else {
-            gpuItems[0].title = "  Temp: unavailable"
-            gpuItems[0].attributedTitle = nil
+            gpuItems[GpuRow.temp].title = "  Temp: unavailable"
+            gpuItems[GpuRow.temp].attributedTitle = nil
             gpuSummary.title = "  Temp: unavailable"
             gpuSummary.attributedTitle = nil
         }
@@ -806,22 +835,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let u = smc?.gpuUtilization() {
             let deviceOut = NSMutableAttributedString(string: "  Device: \(u.device)% ")
             deviceOut.append(colorMeter(pct: u.device, inverted: false))
-            gpuItems[1].attributedTitle = deviceOut
+            gpuItems[GpuRow.device].attributedTitle = deviceOut
 
             let rendOut = NSMutableAttributedString(string: "  Renderer: \(u.renderer)% ")
             rendOut.append(colorMeter(pct: u.renderer, inverted: false))
-            gpuItems[2].attributedTitle = rendOut
+            gpuItems[GpuRow.renderer].attributedTitle = rendOut
 
             let tilerOut = NSMutableAttributedString(string: "  Tiler: \(u.tiler)% ")
             tilerOut.append(colorMeter(pct: u.tiler, inverted: false))
-            gpuItems[3].attributedTitle = tilerOut
+            gpuItems[GpuRow.tiler].attributedTitle = tilerOut
         } else {
-            gpuItems[1].title = "  Device: unavailable"
-            gpuItems[1].attributedTitle = nil
-            gpuItems[2].title = ""
-            gpuItems[2].attributedTitle = nil
-            gpuItems[3].title = ""
-            gpuItems[3].attributedTitle = nil
+            gpuItems[GpuRow.device].title = "  Device: unavailable"
+            gpuItems[GpuRow.device].attributedTitle = nil
+            gpuItems[GpuRow.renderer].title = ""
+            gpuItems[GpuRow.renderer].attributedTitle = nil
+            gpuItems[GpuRow.tiler].title = ""
+            gpuItems[GpuRow.tiler].attributedTitle = nil
         }
     }
 
@@ -854,31 +883,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Battery
 
     func refreshBattery() {
-        // Row 0: temperature
         if let t = smc?.batteryTemperature() {
             let temp = Int(t.rounded())
-            batItems[0].attributedTitle = tempLine(label: "Temp", temp: temp, pct: batteryTempPercent(temp))
+            batItems[BatRow.temp].attributedTitle = tempLine(label: "Temp", temp: temp, pct: batteryTempPercent(temp))
         } else {
-            batItems[0].title = "  Temp: unavailable"
-            batItems[0].attributedTitle = nil
+            batItems[BatRow.temp].title = "  Temp: unavailable"
+            batItems[BatRow.temp].attributedTitle = nil
         }
-        // Rows 1 & 2: cycle count and charge level from IOKit registry
         let info = smc?.batteryRegistryInfo()
         if let cycles = info?.cycles {
-            batItems[1].title = "  Cycle count: \(cycles)"
+            batItems[BatRow.cycles].title = "  Cycle count: \(cycles)"
         } else {
-            batItems[1].title = "  Cycle count: unavailable"
+            batItems[BatRow.cycles].title = "  Cycle count: unavailable"
         }
         if let pct = info?.chargePct {
             let out = NSMutableAttributedString(string: "  Charge: \(pct)% ")
             out.append(colorMeter(pct: pct, inverted: false))
-            batItems[2].attributedTitle = out
+            batItems[BatRow.charge].attributedTitle = out
             let sum = NSMutableAttributedString(string: "  Charge: \(pct)% ")
             sum.append(colorMeter(pct: pct, inverted: false))
             batSummary.attributedTitle = sum
         } else {
-            batItems[2].title = "  Charge: unavailable"
-            batItems[2].attributedTitle = nil
+            batItems[BatRow.charge].title = "  Charge: unavailable"
+            batItems[BatRow.charge].attributedTitle = nil
             batSummary.title = "  Charge: unavailable"
             batSummary.attributedTitle = nil
         }
@@ -888,33 +915,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refreshPower() {
         if let w = smc?.cpuPowerWatts() {
-            pwrItems[0].title = String(format: "  CPU package: %.1f W", w)
+            pwrItems[PwrRow.cpu].title = String(format: "  CPU package: %.1f W", w)
         } else {
-            pwrItems[0].title = "  CPU package: unavailable"
+            pwrItems[PwrRow.cpu].title = "  CPU package: unavailable"
         }
         if let w = smc?.systemPowerWatts() {
-            pwrItems[1].title = String(format: "  System total: %.1f W", w)
+            pwrItems[PwrRow.system].title = String(format: "  System total: %.1f W", w)
         } else {
-            pwrItems[1].title = "  System total: unavailable"
+            pwrItems[PwrRow.system].title = "  System total: unavailable"
         }
     }
 
     // MARK: Disk
 
     func refreshDisk() {
-        let info = diskReader.read()
-        diskItems[0].title = "  Drive:      \(info?.name ?? "unavailable")"
-        diskItems[1].title = "  S.M.A.R.T.: \(info?.smartStatus ?? "—")"
+        let info = cachedDiskInfo ?? diskReader.read()
+        diskItems[DiskRow.drive].title = "  Drive:      \(info?.name ?? "unavailable")"
+        diskItems[DiskRow.smart].title = "  S.M.A.R.T.: \(info?.smartStatus ?? "—")"
         if let t = smc?.storageTemperature() {
             let temp = Int(t.rounded())
-            diskItems[2].attributedTitle = tempLine(label: "Temp", temp: temp, pct: diskTempPercent(temp))
+            diskItems[DiskRow.temp].attributedTitle = tempLine(label: "Temp", temp: temp, pct: diskTempPercent(temp))
         } else {
-            diskItems[2].title = "  Temp: —"
-            diskItems[2].attributedTitle = nil
+            diskItems[DiskRow.temp].title = "  Temp: —"
+            diskItems[DiskRow.temp].attributedTitle = nil
         }
 
-        diskItems[3].title = "  Lifetime read:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
-        diskItems[4].title = "  Lifetime written: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
+        diskItems[DiskRow.lifetimeRead].title    = "  Lifetime read:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
+        diskItems[DiskRow.lifetimeWritten].title = "  Lifetime written: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
     }
 
     // MARK: Graph fast refresh (1 s)
@@ -935,12 +962,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
            bwLastTime != .distantPast, elapsed > 0, rx >= bwLastRx, tx >= bwLastTx {
             let rxRate = Double(rx - bwLastRx) / elapsed
             let txRate = Double(tx - bwLastTx) / elapsed
-            wifiItems[7].title = "  Download: \(formatBandwidth(rxRate))"
-            wifiItems[8].title = "  Upload:   \(formatBandwidth(txRate))"
+            wifiItems[WifiRow.download].title = "  Download: \(formatBandwidth(rxRate))"
+            wifiItems[WifiRow.upload].title   = "  Upload:   \(formatBandwidth(txRate))"
             wifiGraph.push(top: rxRate, bottom: txRate)
         } else {
-            wifiItems[7].title = "  Download: —"
-            wifiItems[8].title = "  Upload:   —"
+            wifiItems[WifiRow.download].title = "  Download: —"
+            wifiItems[WifiRow.upload].title   = "  Upload:   —"
             wifiGraph.push(top: 0, bottom: 0)
         }
         if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? "") {
@@ -950,6 +977,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refreshDiskIO() {
         let info = diskReader.read()
+        cachedDiskInfo = info
         let now = Date()
         let elapsed = now.timeIntervalSince(diskLastTime)
         var readRate: Double = 0, writeRate: Double = 0

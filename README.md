@@ -23,7 +23,9 @@ Updates every 3 seconds (graphs update every 1 second):
 
 The panel stays open when you click other apps — it closes only when you click the status bar item again or press **Close**. The panel automatically resizes as sections are expanded or collapsed.
 
-Sections marked **▼** are collapsible — click the header to collapse to a single summary row, click again to expand. Collapsed state persists across restarts.
+Sections marked **▼** are collapsible — click the header to collapse to a single summary row, click again to expand. Collapsed state and temperature unit preference persist across restarts.
+
+The current app version is shown as a dim footer above the Close/Quit buttons.
 
 **Apple Silicon** (M-series — cluster-level sensors):
 ```
@@ -76,6 +78,7 @@ Sections marked **▼** are collapsible — click the header to collapse to a si
   [✓] Use Fahrenheit
   ───────────────────────────
   [ Close ]  [ Quit ]
+  Vitals 1.0.0
 ```
 
 **Intel** (per-core sensors, fan, memory temp):
@@ -135,7 +138,13 @@ Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" checkbox and pers
 
 CPU/GPU temperature, memory, fan, and disk-temp data is read from the System Management Controller (SMC) via IOKit. GPU utilization (Device, Renderer, Tiler %) comes from the `AGXAccelerator` IOKit registry entry. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and lifetime bytes come from `IOBlockStorageDriver` and its parent NVMe controller. Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
 
-Two timers run independently: graphs (Wi-Fi bandwidth, disk I/O) refresh every 1 second; all other stats refresh every 3 seconds.
+Two timers run independently: graphs (Wi-Fi bandwidth, disk I/O) refresh every 1 second; all other stats refresh every 3 seconds. The disk read is shared between the two timers so the driver is polled at most once per second.
+
+Startup events and errors are written to the macOS unified log (subsystem `com.eric.vitals`). View with:
+
+```bash
+log show --predicate 'subsystem == "com.eric.vitals"' --info --last 1h
+```
 
 ## Requirements
 
