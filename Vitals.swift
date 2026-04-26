@@ -298,66 +298,81 @@ struct DiskReader {
     }
 }
 
-// MARK: - Disk graph view
+// MARK: - Dual-bar graph view (shared by Disk and Wi-Fi)
 
-fileprivate class DiskGraphView: NSView {
-    private struct Sample { var read: Double; var write: Double }
+fileprivate class DualBarGraphView: NSView {
+    private struct Sample { var top: Double; var bottom: Double }
     private static let cap = 40
     private var samples: [Sample] = []
-    var latestRead:  Double = 0
-    var latestWrite: Double = 0
+    var latestTop:    Double = 0
+    var latestBottom: Double = 0
 
-    init() { super.init(frame: NSRect(x: 0, y: 0, width: 260, height: 76)) }
+    private let topLabel:    String
+    private let bottomLabel: String
+    private let topColor:    NSColor
+    private let bottomColor: NSColor
+    private let lineColor:   NSColor
+    private let format:      (Double) -> String
+
+    init(topLabel: String, bottomLabel: String,
+         topColor: NSColor, bottomColor: NSColor, lineColor: NSColor,
+         format: @escaping (Double) -> String) {
+        self.topLabel    = topLabel
+        self.bottomLabel = bottomLabel
+        self.topColor    = topColor
+        self.bottomColor = bottomColor
+        self.lineColor   = lineColor
+        self.format      = format
+        super.init(frame: NSRect(x: 0, y: 0, width: 260, height: 76))
+    }
     required init?(coder: NSCoder) { fatalError() }
-    override var isFlipped: Bool { true }  // y=0 at top, increases downward
+    override var isFlipped: Bool { true }
 
-    func push(read: Double, write: Double) {
-        latestRead = read; latestWrite = write
-        samples.append(Sample(read: read, write: write))
+    func push(top: Double, bottom: Double) {
+        latestTop = top; latestBottom = bottom
+        samples.append(Sample(top: top, bottom: bottom))
         if samples.count > Self.cap { samples.removeFirst() }
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let W = bounds.width, H = bounds.height
-        let mg: CGFloat = 33             // matches standard menu item text indentation (includes checkmark column)
+        let mg: CGFloat = 33
 
-        // Label strip at top (y increases downward in flipped view)
         let lbH: CGFloat = 28
-        // Graph area below labels
         let gTop: CGFloat = lbH + 2
         let gBot: CGFloat = H - 4
         let gH   = gBot - gTop
         let midY = gTop + gH / 2
 
-        // dotted center line
         let lp = NSBezierPath()
         lp.move(to: NSPoint(x: mg, y: midY))
         lp.line(to: NSPoint(x: W - mg, y: midY))
         lp.lineWidth = 0.75
         lp.setLineDash([3, 3], count: 2, phase: 0)
-        NSColor(red: 0.65, green: 0.35, blue: 0.82, alpha: 0.55).setStroke()
+        lineColor.setStroke()
         lp.stroke()
 
-        let maxVal = max(65_536, samples.flatMap { [$0.read, $0.write] }.max() ?? 1)
+        let maxTop = max(65_536, samples.map { $0.top    }.max() ?? 1)
+        let maxBot = max(65_536, samples.map { $0.bottom }.max() ?? 1)
         let halfH  = gH / 2
         let barW: CGFloat = 5, step: CGFloat = 6
 
         for (i, s) in samples.reversed().enumerated() {
             let x = W - mg - CGFloat(i) * step - barW
             if x < mg { break }
-            let rh = CGFloat(s.read  / maxVal) * halfH
-            let wh = CGFloat(s.write / maxVal) * halfH
-            NSColor.systemPink.withAlphaComponent(0.88).setFill()
-            NSBezierPath(rect: NSRect(x: x, y: midY - rh, width: barW, height: rh)).fill()
-            NSColor.systemBlue.withAlphaComponent(0.88).setFill()
-            NSBezierPath(rect: NSRect(x: x, y: midY,      width: barW, height: wh)).fill()
+            let th = CGFloat(s.top    / maxTop) * halfH
+            let bh = CGFloat(s.bottom / maxBot) * halfH
+            topColor.withAlphaComponent(0.88).setFill()
+            NSBezierPath(rect: NSRect(x: x, y: midY - th, width: barW, height: th)).fill()
+            bottomColor.withAlphaComponent(0.88).setFill()
+            NSBezierPath(rect: NSRect(x: x, y: midY,      width: barW, height: bh)).fill()
         }
 
         let half = (W - mg * 2) / 2
-        drawMetric(fmt(latestRead),  sub: "Read",
+        drawMetric(format(latestTop),    sub: topLabel,
                    in: NSRect(x: mg,        y: 4, width: half, height: lbH))
-        drawMetric(fmt(latestWrite), sub: "Write",
+        drawMetric(format(latestBottom), sub: bottomLabel,
                    in: NSRect(x: mg + half, y: 4, width: half, height: lbH))
     }
 
@@ -370,13 +385,6 @@ fileprivate class DiskGraphView: NSView {
             .font: NSFont.systemFont(ofSize: 9),
             .foregroundColor: NSColor.secondaryLabelColor
         ]).draw(at: NSPoint(x: r.minX, y: r.minY + 15))
-    }
-
-    private func fmt(_ bps: Double) -> String {
-        guard bps >= 1_024 else { return "—" }
-        if bps < 1_048_576     { return String(format: "%.0f KB/s", bps / 1_024) }
-        if bps < 1_073_741_824 { return String(format: "%.1f MB/s", bps / 1_048_576) }
-        return String(format: "%.1f GB/s", bps / 1_073_741_824)
     }
 }
 
@@ -405,24 +413,35 @@ private class CollapseHeader: NSView {
     }
 }
 
+// MARK: - Row label shim (lets refresh methods call .title / .attributedTitle unchanged)
+
+private extension NSTextField {
+    var title: String {
+        get { stringValue }
+        set { stringValue = newValue }
+    }
+    var attributedTitle: NSAttributedString? {
+        get { nil }
+        set { if let v = newValue { attributedStringValue = v } }
+    }
+}
+
 // MARK: - App
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     var timer: Timer?
-    let menu = NSMenu()
+    var graphTimer: Timer?
+    let popover   = NSPopover()
+    private let stackView = NSStackView()
 
     private var bwLastRx:   UInt64 = 0
     private var bwLastTx:   UInt64 = 0
     private var bwLastTime: Date   = .distantPast
 
-    let wifiHeader     = NSMenuItem()
-    let cpuHeader      = NSMenuItem()
-    let batHeader      = NSMenuItem()
-    let diskHeader     = NSMenuItem()
-    let wifiSummary    = NSMenuItem()
-    let cpuSummary     = NSMenuItem()
-    let batSummary     = NSMenuItem()
+    let wifiSummary = NSTextField(labelWithString: "")
+    let cpuSummary  = NSTextField(labelWithString: "")
+    let batSummary  = NSTextField(labelWithString: "")
     fileprivate let wifiHeaderView = CollapseHeader(label: "Wi-Fi")
     fileprivate let cpuHeaderView  = CollapseHeader(label: "CPU")
     fileprivate let batHeaderView  = CollapseHeader(label: "Battery")
@@ -445,22 +464,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "diskCollapsed") }
     }
 
-    var wifiItems: [NSMenuItem] = []
-    var cpuItems:  [NSMenuItem] = []
-    var gpuItems:  [NSMenuItem] = []
-    var memItems:  [NSMenuItem] = []
-    var fanItems:  [NSMenuItem] = []
-    var batItems:  [NSMenuItem] = []
-    var pwrItems:  [NSMenuItem] = []
-    var diskItems: [NSMenuItem] = []
+    var wifiItems: [NSTextField] = []
+    var cpuItems:  [NSTextField] = []
+    var gpuItems:  [NSTextField] = []
+    var memItems:  [NSTextField] = []
+    var fanItems:  [NSTextField] = []
+    var batItems:  [NSTextField] = []
+    var pwrItems:  [NSTextField] = []
+    var diskItems: [NSTextField] = []
 
     let diskReader    = DiskReader()
-    fileprivate let diskGraph = DiskGraphView()
-    let diskGraphItem = NSMenuItem()
+    fileprivate let diskGraph: DualBarGraphView = {
+        DualBarGraphView(
+            topLabel: "Read", bottomLabel: "Write",
+            topColor: .systemOrange, bottomColor: .systemTeal,
+            lineColor: NSColor(red: 0.85, green: 0.45, blue: 0.0, alpha: 0.40),
+            format: { bps in
+                guard bps >= 1_024 else { return "—" }
+                if bps < 1_048_576     { return String(format: "%.0f KB/s", bps / 1_024) }
+                if bps < 1_073_741_824 { return String(format: "%.1f MB/s", bps / 1_048_576) }
+                return String(format: "%.1f GB/s", bps / 1_073_741_824)
+            }
+        )
+    }()
+    fileprivate let wifiGraph: DualBarGraphView = {
+        DualBarGraphView(
+            topLabel: "Down", bottomLabel: "Up",
+            topColor: .systemGreen, bottomColor: .systemPurple,
+            lineColor: NSColor(red: 0.15, green: 0.60, blue: 0.30, alpha: 0.45),
+            format: { bps in
+                guard bps >= 1_024 else { return "—" }
+                if bps < 1_048_576 { return String(format: "%.0f KB/s", bps / 1_024) }
+                return String(format: "%.1f MB/s", bps / 1_048_576)
+            }
+        )
+    }()
     private var diskLastRx:   UInt64 = 0
     private var diskLastTx:   UInt64 = 0
     private var diskLastTime: Date   = .distantPast
-    let unitItem   = NSMenuItem()
+    let tempUnitButton = NSButton()
 
     var useFahrenheit: Bool {
         get { UserDefaults.standard.bool(forKey: "useFahrenheit") }
@@ -470,83 +512,179 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let smc = SMCReader()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        buildMenu()
+        buildPopover()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in self.refresh() }
+        refreshGraphs()
+        timer      = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in self.refresh() }
+        graphTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in self.refreshGraphs() }
     }
 
-    func buildMenu() {
-        addCollapsible(header: wifiHeader, view: wifiHeaderView, summary: wifiSummary,
+    func buildPopover() {
+        // Stack view
+        stackView.orientation  = .vertical
+        stackView.alignment    = .leading
+        stackView.spacing      = 0
+        stackView.edgeInsets   = NSEdgeInsets(top: 6, left: 0, bottom: 8, right: 0)
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        // Wi-Fi
+        addCollapsible(headerView: wifiHeaderView, summary: wifiSummary,
                        rows: 9, collapsed: wifiCollapsed,
                        onToggle: { [weak self] in self?.toggleWifi() }, into: &wifiItems)
+        addGraph(wifiGraph, hidden: wifiCollapsed)
         sep()
-        addCollapsible(header: cpuHeader, view: cpuHeaderView, summary: cpuSummary,
+
+        // CPU
+        addCollapsible(headerView: cpuHeaderView, summary: cpuSummary,
                        rows: max(1, smc?.coreKeys.count ?? 1), collapsed: cpuCollapsed,
                        onToggle: { [weak self] in self?.toggleCPU() }, into: &cpuItems)
         sep()
-        addSection("GPU",     rows: 1, into: &gpuItems)
-        sep()
-        addSection("Memory",  rows: 1, into: &memItems)
-        sep()
-        addSection("Fan",     rows: 1, into: &fanItems)
-        sep()
-        addCollapsible(header: batHeader, view: batHeaderView, summary: batSummary,
+
+        addSection("GPU",    rows: 1, into: &gpuItems);  sep()
+        addSection("Memory", rows: 1, into: &memItems);  sep()
+        addSection("Fan",    rows: 1, into: &fanItems);  sep()
+
+        // Battery
+        addCollapsible(headerView: batHeaderView, summary: batSummary,
                        rows: 3, collapsed: batCollapsed,
                        onToggle: { [weak self] in self?.toggleBat() }, into: &batItems)
         sep()
-        addSection("Power",   rows: 2, into: &pwrItems)
-        sep()
-        // Disk section — graph always visible, metadata rows toggle on collapse
+
+        addSection("Power", rows: 2, into: &pwrItems);  sep()
+
+        // Disk — graph always visible, text rows collapse
         diskHeaderView.isCollapsed = diskCollapsed
         diskHeaderView.onTap = { [weak self] in self?.toggleDisk() }
-        diskHeader.view = diskHeaderView
-        menu.addItem(diskHeader)
-        for _ in 0..<3 { let it = NSMenuItem(); diskItems.append(it); menu.addItem(it) }
-        diskGraphItem.view = diskGraph
-        menu.addItem(diskGraphItem)
-        for _ in 0..<2 { let it = NSMenuItem(); diskItems.append(it); menu.addItem(it) }
-        diskItems.forEach { $0.isHidden = diskCollapsed }
+        addHeader(diskHeaderView)
+        for _ in 0..<3 { diskItems.append(addRow(hidden: diskCollapsed)) }
+        addGraph(diskGraph, hidden: false)
+        for _ in 0..<2 { diskItems.append(addRow(hidden: diskCollapsed)) }
         sep()
-        unitItem.title  = "Use Fahrenheit"
-        unitItem.action = #selector(toggleTempUnit)
-        unitItem.state  = useFahrenheit ? .on : .off
-        menu.addItem(unitItem)
+
+        // Temperature unit toggle
+        tempUnitButton.title = "  Use Fahrenheit"
+        tempUnitButton.setButtonType(.switch)
+        tempUnitButton.state  = useFahrenheit ? .on : .off
+        tempUnitButton.action = #selector(toggleTempUnit)
+        tempUnitButton.target = self
+        tempUnitButton.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(tempUnitButton)
         sep()
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        statusItem.menu = menu
+
+        // Close / Quit
+        let closeBtn = NSButton(title: "Close", target: self,
+                                action: #selector(closePopover))
+        let quitBtn  = NSButton(title: "Quit",  target: NSApp,
+                                action: #selector(NSApplication.terminate(_:)))
+        for b in [closeBtn, quitBtn] { b.bezelStyle = .rounded }
+        let btnRow = NSStackView(views: [closeBtn, quitBtn])
+        btnRow.spacing      = 8
+        btnRow.edgeInsets   = NSEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
+        btnRow.distribution = .fillEqually
+        stackView.addArrangedSubview(btnRow)
+
+        // Scroll view
+        let scroll = NSScrollView()
+        scroll.drawsBackground  = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers  = true
+        scroll.documentView = stackView
+        NSLayoutConstraint.activate([
+            stackView.leadingAnchor .constraint(equalTo: scroll.contentView.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            stackView.topAnchor     .constraint(equalTo: scroll.contentView.topAnchor),
+        ])
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 600))
+        scroll.frame = content.bounds
+        scroll.autoresizingMask = [.width, .height]
+        content.addSubview(scroll)
+
+        let vc = NSViewController()
+        vc.view = content
+        popover.contentViewController = vc
+        popover.contentSize = NSSize(width: 280, height: 600)
+        popover.behavior    = .applicationDefined
+        popover.animates    = true
+
+        statusItem.button?.action = #selector(togglePopover(_:))
+        statusItem.button?.target = self
     }
 
-    private func sep() { menu.addItem(.separator()) }
+    // MARK: Popover helpers
 
-    private func addSection(_ title: String, rows: Int, into items: inout [NSMenuItem]) {
-        let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        header.attributedTitle = sectionHeader(title)
-        menu.addItem(header)
-        for _ in 0..<rows {
-            let item = NSMenuItem()
-            items.append(item)
-            menu.addItem(item)
-        }
+    @discardableResult
+    private func addRow(hidden: Bool = false) -> NSTextField {
+        let f = NSTextField(labelWithString: "")
+        f.isSelectable = false
+        f.cell?.lineBreakMode = .byTruncatingTail
+        f.translatesAutoresizingMaskIntoConstraints = false
+        f.isHidden = hidden
+        stackView.addArrangedSubview(f)
+        return f
     }
 
-    private func addCollapsible(header: NSMenuItem, view: CollapseHeader, summary: NSMenuItem,
+    private func addHeader(_ view: CollapseHeader) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.heightAnchor.constraint(equalToConstant: 17).isActive = true
+        stackView.addArrangedSubview(view)
+    }
+
+    private func addGraph(_ graph: DualBarGraphView, hidden: Bool) {
+        graph.translatesAutoresizingMaskIntoConstraints = false
+        graph.heightAnchor.constraint(equalToConstant: 76).isActive = true
+        graph.isHidden = hidden
+        stackView.addArrangedSubview(graph)
+    }
+
+    private func sep() {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(box)
+    }
+
+    private func addSection(_ title: String, rows: Int, into items: inout [NSTextField]) {
+        let header = NSTextField(labelWithString: "")
+        header.attributedStringValue = sectionHeader(title)
+        header.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(header)
+        for _ in 0..<rows { items.append(addRow()) }
+    }
+
+    private func addCollapsible(headerView: CollapseHeader, summary: NSTextField,
                                 rows: Int, collapsed: Bool, onToggle: @escaping () -> Void,
-                                into items: inout [NSMenuItem]) {
-        view.isCollapsed = collapsed
-        view.onTap = onToggle
-        header.view = view
-        menu.addItem(header)
-        menu.addItem(summary)
-        for _ in 0..<rows {
-            let item = NSMenuItem(); items.append(item); menu.addItem(item)
-        }
-        applyCollapse(summary: summary, details: items, collapsed: collapsed)
+                                into items: inout [NSTextField]) {
+        headerView.isCollapsed = collapsed
+        headerView.onTap = onToggle
+        addHeader(headerView)
+        summary.isHidden = !collapsed
+        summary.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(summary)
+        for _ in 0..<rows { items.append(addRow(hidden: collapsed)) }
     }
 
-    private func applyCollapse(summary: NSMenuItem, details: [NSMenuItem], collapsed: Bool) {
+    private func applyCollapse(summary: NSTextField, details: [NSTextField], collapsed: Bool) {
         summary.isHidden = !collapsed
         details.forEach { $0.isHidden = collapsed }
+    }
+
+    @objc func togglePopover(_ sender: Any?) {
+        if popover.isShown {
+            popover.close()
+        } else if let btn = statusItem.button {
+            popover.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
+            resizePopover()
+        }
+    }
+
+    @objc func closePopover() { popover.close() }
+
+    private func resizePopover() {
+        guard popover.isShown else { return }
+        stackView.layoutSubtreeIfNeeded()
+        let h = min(700, max(150, stackView.fittingSize.height))
+        popover.contentSize = NSSize(width: 280, height: h)
     }
 
     private func sectionHeader(_ title: String) -> NSAttributedString {
@@ -595,22 +733,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wifiItems[1].attributedTitle = sigOut
         for (i, (label, value)) in rows.enumerated() {
             wifiItems[i + 2].title = "  \(label): \(value)"
-        }
-
-        let now = Date()
-        let elapsed = now.timeIntervalSince(bwLastTime)
-        if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? ""),
-           bwLastTime != .distantPast, elapsed > 0, rx >= bwLastRx, tx >= bwLastTx {
-            let rxRate = Double(rx - bwLastRx) / elapsed
-            let txRate = Double(tx - bwLastTx) / elapsed
-            wifiItems[7].title = "  Download: \(formatBandwidth(rxRate))"
-            wifiItems[8].title = "  Upload:   \(formatBandwidth(txRate))"
-        } else {
-            wifiItems[7].title = "  Download: —"
-            wifiItems[8].title = "  Upload:   —"
-        }
-        if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? "") {
-            bwLastRx = rx; bwLastTx = tx; bwLastTime = now
         }
 
         let sumOut = NSMutableAttributedString(string: "  \(iface.ssid() ?? "—")  \(pct)% ")
@@ -739,6 +861,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             diskItems[2].attributedTitle = nil
         }
 
+        diskItems[3].title = "  Lifetime read:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
+        diskItems[4].title = "  Lifetime written: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
+    }
+
+    // MARK: Graph fast refresh (1 s)
+
+    func refreshGraphs() {
+        refreshWifiBandwidth()
+        refreshDiskIO()
+    }
+
+    func refreshWifiBandwidth() {
+        guard let iface = CWWiFiClient.shared().interface() else {
+            wifiGraph.push(top: 0, bottom: 0)
+            return
+        }
+        let now = Date()
+        let elapsed = now.timeIntervalSince(bwLastTime)
+        if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? ""),
+           bwLastTime != .distantPast, elapsed > 0, rx >= bwLastRx, tx >= bwLastTx {
+            let rxRate = Double(rx - bwLastRx) / elapsed
+            let txRate = Double(tx - bwLastTx) / elapsed
+            wifiItems[7].title = "  Download: \(formatBandwidth(rxRate))"
+            wifiItems[8].title = "  Upload:   \(formatBandwidth(txRate))"
+            wifiGraph.push(top: rxRate, bottom: txRate)
+        } else {
+            wifiItems[7].title = "  Download: —"
+            wifiItems[8].title = "  Upload:   —"
+            wifiGraph.push(top: 0, bottom: 0)
+        }
+        if let (rx, tx) = interfaceBytesRxTx(iface.interfaceName ?? "") {
+            bwLastRx = rx; bwLastTx = tx; bwLastTime = now
+        }
+    }
+
+    func refreshDiskIO() {
+        let info = diskReader.read()
         let now = Date()
         let elapsed = now.timeIntervalSince(diskLastTime)
         var readRate: Double = 0, writeRate: Double = 0
@@ -750,10 +909,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let rx = info?.bytesRead, let tx = info?.bytesWritten {
             diskLastRx = rx; diskLastTx = tx; diskLastTime = now
         }
-        diskGraph.push(read: readRate, write: writeRate)
-
-        diskItems[3].title = "  Lifetime read:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
-        diskItems[4].title = "  Lifetime written: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
+        diskGraph.push(top: readRate, bottom: writeRate)
     }
 
     // 20°C (idle) = 0%, 60°C (hot) = 100%
@@ -795,29 +951,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         diskCollapsed.toggle()
         diskHeaderView.isCollapsed = diskCollapsed
         diskItems.forEach { $0.isHidden = diskCollapsed }
+        resizePopover()
     }
 
     func toggleBat() {
         batCollapsed.toggle()
         batHeaderView.isCollapsed = batCollapsed
         applyCollapse(summary: batSummary, details: batItems, collapsed: batCollapsed)
+        resizePopover()
     }
 
     func toggleWifi() {
         wifiCollapsed.toggle()
         wifiHeaderView.isCollapsed = wifiCollapsed
         applyCollapse(summary: wifiSummary, details: wifiItems, collapsed: wifiCollapsed)
+        wifiGraph.isHidden = wifiCollapsed
+        resizePopover()
     }
 
     func toggleCPU() {
         cpuCollapsed.toggle()
         cpuHeaderView.isCollapsed = cpuCollapsed
         applyCollapse(summary: cpuSummary, details: cpuItems, collapsed: cpuCollapsed)
+        resizePopover()
     }
 
     @objc func toggleTempUnit() {
         useFahrenheit.toggle()
-        unitItem.state = useFahrenheit ? .on : .off
+        tempUnitButton.state = useFahrenheit ? .on : .off
         refresh()
     }
 

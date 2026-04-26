@@ -4,7 +4,7 @@ A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signa
 
 ## Menu bar
 
-Updates every 3 seconds:
+Updates every 3 seconds (graphs update every 1 second):
 
 ```
 -56 dBm (57%) ■■■■■■□□□□ │ 52°C
@@ -14,7 +14,9 @@ Updates every 3 seconds:
 - **CPU**: hottest core/cluster temperature
 - Meter squares are color-coded: red → yellow → green (Wi-Fi signal) / green → yellow → red (heat)
 
-## Panel (click to expand)
+## Panel (click status bar item to open/close)
+
+The panel stays open when you click other apps — it closes only when you click the status bar item again or press **Close**. The panel automatically resizes as sections are expanded or collapsed.
 
 Sections marked **▼** are collapsible — click the header to collapse to a single summary row, click again to expand. Collapsed state persists across restarts.
 
@@ -30,6 +32,7 @@ Sections marked **▼** are collapsible — click the header to collapse to a si
   Security:  WPA2
   Download:  12.3 MB/s
   Upload:    524 KB/s
+  [download/upload bar graph]
   ───────────────────────────
   ▼ CPU                            ← click to collapse (shows hottest temp + meter)
   Cluster 1: 46°C (23%) ■■□□□□□□□□
@@ -54,7 +57,7 @@ Sections marked **▼** are collapsible — click the header to collapse to a si
   CPU package:   9.0 W
   System total:  9.8 W
   ───────────────────────────
-  ▼ Disk                           ← click to collapse (shows graph only)
+  ▼ Disk                           ← click to collapse (hides text rows, graph stays)
   Drive:      APPLE SSD AP0512Z
   S.M.A.R.T.: Verified
   Temp:       77°F (12%) ■□□□□□□□□□
@@ -64,7 +67,7 @@ Sections marked **▼** are collapsible — click the header to collapse to a si
   ───────────────────────────
   [✓] Use Fahrenheit
   ───────────────────────────
-  Quit
+  [ Close ]  [ Quit ]
 ```
 
 **Intel** (per-core sensors, fan, memory temp):
@@ -82,15 +85,26 @@ Sections marked **▼** are collapsible — click the header to collapse to a si
 
 Sensors are detected dynamically at startup — the app adapts to whatever the SMC exposes. Sections with no available sensor show "unavailable" rather than disappearing.
 
+## Wi-Fi graph
+
+The Wi-Fi section includes a live download/upload bar graph that updates every second and retains ~40 seconds of history:
+
+- **Green bars** (upward) — download rate
+- **Purple bars** (downward) — upload rate
+- Each half scales independently to its own peak, so upload activity is always visible even when download is much faster
+- Current rates are shown above the graph in the Download/Upload rows
+- Graph hides when the Wi-Fi section is collapsed
+
 ## Disk graph
 
-The Disk section includes a live read/write bar graph that retains ~2 minutes of history:
+The Disk section includes a live read/write bar graph that updates every second and retains ~40 seconds of history:
 
-- **Pink bars** (upward) — read rate
-- **Blue bars** (downward) — write rate
-- Bars are auto-scaled to the maximum visible value (floor: 64 KB/s)
+- **Orange bars** (upward) — read rate
+- **Teal bars** (downward) — write rate
+- Each half scales independently to its own peak
 - Current read/write rates are shown above the graph
 - Lifetime bytes read/written shown below
+- Graph remains visible even when the Disk section is collapsed
 
 ## Signal scale
 
@@ -107,11 +121,13 @@ Wi-Fi percentage maps RSSI to the practical range −90 dBm (0%) → −30 dBm (
 
 CPU/GPU/memory temp percentage maps 30°C (idle, 0%) → 100°C (throttle, 100%). Battery temp uses a separate scale: 20°C (0%) → 50°C (100%). Disk temp uses 20°C (0%) → 60°C (100%).
 
-Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" menu item and persists across restarts.
+Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" checkbox and persists across restarts.
 
 ## How it works
 
 CPU/GPU/memory/fan/disk-temp data is read from the System Management Controller (SMC) via IOKit. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and lifetime bytes come from `IOBlockStorageDriver` and its parent NVMe controller. Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
+
+Two timers run independently: graphs (Wi-Fi bandwidth, disk I/O) refresh every 1 second; all other stats refresh every 3 seconds.
 
 ## Requirements
 
