@@ -82,6 +82,24 @@ class SMCReader {
         return nil
     }
 
+    struct GPUUtilization {
+        var device: Int, renderer: Int, tiler: Int
+    }
+
+    func gpuUtilization() -> GPUUtilization? {
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"))
+        guard svc != 0 else { return nil }
+        defer { IOObjectRelease(svc) }
+        var props: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(svc, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+              let dict  = props?.takeRetainedValue() as? [String: Any],
+              let stats = dict["PerformanceStatistics"] as? [String: Any] else { return nil }
+        let device   = stats["Device Utilization %"]   as? Int ?? 0
+        let renderer = stats["Renderer Utilization %"] as? Int ?? 0
+        let tiler    = stats["Tiler Utilization %"]    as? Int ?? 0
+        return GPUUtilization(device: device, renderer: renderer, tiler: tiler)
+    }
+
     // MARK: Memory
 
     func memoryTemperature() -> Double? {
@@ -441,9 +459,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     let wifiSummary = NSTextField(labelWithString: "")
     let cpuSummary  = NSTextField(labelWithString: "")
+    let gpuSummary  = NSTextField(labelWithString: "")
     let batSummary  = NSTextField(labelWithString: "")
     fileprivate let wifiHeaderView = CollapseHeader(label: "Wi-Fi")
     fileprivate let cpuHeaderView  = CollapseHeader(label: "CPU")
+    fileprivate let gpuHeaderView  = CollapseHeader(label: "GPU")
     fileprivate let batHeaderView  = CollapseHeader(label: "Battery")
     fileprivate let diskHeaderView = CollapseHeader(label: "Disk")
 
@@ -454,6 +474,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var cpuCollapsed: Bool {
         get { UserDefaults.standard.bool(forKey: "cpuCollapsed") }
         set { UserDefaults.standard.set(newValue, forKey: "cpuCollapsed") }
+    }
+    var gpuCollapsed: Bool {
+        get { UserDefaults.standard.bool(forKey: "gpuCollapsed") }
+        set { UserDefaults.standard.set(newValue, forKey: "gpuCollapsed") }
     }
     var batCollapsed: Bool {
         get { UserDefaults.standard.bool(forKey: "batCollapsed") }
@@ -540,7 +564,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                        onToggle: { [weak self] in self?.toggleCPU() }, into: &cpuItems)
         sep()
 
-        addSection("GPU",    rows: 1, into: &gpuItems);  sep()
+        addCollapsible(headerView: gpuHeaderView, summary: gpuSummary,
+                       rows: 4, collapsed: gpuCollapsed,
+                       onToggle: { [weak self] in self?.toggleGPU() }, into: &gpuItems)
+        sep()
         addSection("Memory", rows: 1, into: &memItems);  sep()
         addSection("Fan",    rows: 1, into: &fanItems);  sep()
 
@@ -766,10 +793,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func refreshGPU() {
         if let t = smc?.gpuTemperature() {
             let temp = Int(t.rounded())
-            gpuItems[0].attributedTitle = tempLine(label: "Temp", temp: temp, pct: cpuTempPercent(temp))
+            let line = tempLine(label: "Temp", temp: temp, pct: cpuTempPercent(temp))
+            gpuItems[0].attributedTitle = line
+            gpuSummary.attributedTitle = line
         } else {
             gpuItems[0].title = "  Temp: unavailable"
             gpuItems[0].attributedTitle = nil
+            gpuSummary.title = "  Temp: unavailable"
+            gpuSummary.attributedTitle = nil
+        }
+
+        if let u = smc?.gpuUtilization() {
+            let deviceOut = NSMutableAttributedString(string: "  Device: \(u.device)% ")
+            deviceOut.append(colorMeter(pct: u.device, inverted: false))
+            gpuItems[1].attributedTitle = deviceOut
+
+            let rendOut = NSMutableAttributedString(string: "  Renderer: \(u.renderer)% ")
+            rendOut.append(colorMeter(pct: u.renderer, inverted: false))
+            gpuItems[2].attributedTitle = rendOut
+
+            let tilerOut = NSMutableAttributedString(string: "  Tiler: \(u.tiler)% ")
+            tilerOut.append(colorMeter(pct: u.tiler, inverted: false))
+            gpuItems[3].attributedTitle = tilerOut
+        } else {
+            gpuItems[1].title = "  Device: unavailable"
+            gpuItems[1].attributedTitle = nil
+            gpuItems[2].title = ""
+            gpuItems[2].attributedTitle = nil
+            gpuItems[3].title = ""
+            gpuItems[3].attributedTitle = nil
         }
     }
 
@@ -973,6 +1025,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         cpuCollapsed.toggle()
         cpuHeaderView.isCollapsed = cpuCollapsed
         applyCollapse(summary: cpuSummary, details: cpuItems, collapsed: cpuCollapsed)
+        resizePopover()
+    }
+
+    func toggleGPU() {
+        gpuCollapsed.toggle()
+        gpuHeaderView.isCollapsed = gpuCollapsed
+        applyCollapse(summary: gpuSummary, details: gpuItems, collapsed: gpuCollapsed)
         resizePopover()
     }
 

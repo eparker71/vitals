@@ -39,8 +39,11 @@ Sections marked **▼** are collapsible — click the header to collapse to a si
   Cluster 2: 45°C (21%) ■■□□□□□□□□
   Cluster 3: 44°C (20%) ■■□□□□□□□□
   ───────────────────────────
-  GPU
+  ▼ GPU                            ← click to collapse (shows temp + meter)
   Temp:      42°C (17%) ■■□□□□□□□□
+  Device:    13% ■■□□□□□□□□
+  Renderer:  13% ■■□□□□□□□□
+  Tiler:      9% ■□□□□□□□□□
   ───────────────────────────
   Memory
   Temp:      unavailable
@@ -125,7 +128,7 @@ Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" checkbox and pers
 
 ## How it works
 
-CPU/GPU/memory/fan/disk-temp data is read from the System Management Controller (SMC) via IOKit. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and lifetime bytes come from `IOBlockStorageDriver` and its parent NVMe controller. Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
+CPU/GPU temperature, memory, fan, and disk-temp data is read from the System Management Controller (SMC) via IOKit. GPU utilization (Device, Renderer, Tiler %) comes from the `AGXAccelerator` IOKit registry entry. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and lifetime bytes come from `IOBlockStorageDriver` and its parent NVMe controller. Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
 
 Two timers run independently: graphs (Wi-Fi bandwidth, disk I/O) refresh every 1 second; all other stats refresh every 3 seconds.
 
