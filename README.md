@@ -2,6 +2,11 @@
 
 A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signal, CPU/GPU temps, fan speed, battery health, disk activity, and power draw — all from a single menu bar item with no Dock icon. Works on both Intel and Apple Silicon Macs.
 
+<p align="center">
+  <img src="screenshot1.png" width="45%">
+  <img src="screenshot2.png" width="45%">
+</p>
+
 ## Menu bar
 
 Updates every 3 seconds (graphs update every 1 second):
