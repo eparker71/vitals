@@ -463,7 +463,7 @@ private enum PwrRow {
     static let cpu=0, system=1
 }
 private enum DiskRow {
-    static let drive=0, smart=1, temp=2, lifetimeRead=3, lifetimeWritten=4
+    static let drive=0, smart=1, temp=2, sessionRead=3, sessionWritten=4
 }
 
 // MARK: - App
@@ -478,6 +478,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var bwLastRx:   UInt64 = 0
     private var bwLastTx:   UInt64 = 0
     private var bwLastTime: Date   = .distantPast
+    private var wifiConnected: Bool = false
 
     let wifiSummary = NSTextField(labelWithString: "")
     let cpuSummary  = NSTextField(labelWithString: "")
@@ -551,9 +552,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cachedDiskInfo: DiskInfo?
     let tempUnitButton = NSButton()
 
-    var useFahrenheit: Bool {
-        get { UserDefaults.standard.bool(forKey: "useFahrenheit") }
-        set { UserDefaults.standard.set(newValue, forKey: "useFahrenheit") }
+    var useCelsius: Bool {
+        get { UserDefaults.standard.bool(forKey: "useCelsius") }
+        set { UserDefaults.standard.set(newValue, forKey: "useCelsius") }
     }
 
     let smc = SMCReader()
@@ -617,9 +618,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sep()
 
         // Temperature unit toggle
-        tempUnitButton.title = "  Use Fahrenheit"
+        tempUnitButton.title = "  Use Celsius"
         tempUnitButton.setButtonType(.switch)
-        tempUnitButton.state  = useFahrenheit ? .on : .off
+        tempUnitButton.state  = useCelsius ? .on : .off
         tempUnitButton.action = #selector(toggleTempUnit)
         tempUnitButton.target = self
         tempUnitButton.translatesAutoresizingMaskIntoConstraints = false
@@ -770,18 +771,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Wi-Fi
 
+    private func showWifiUnavailable(_ message: String) {
+        wifiConnected = false
+        wifiSummary.title = "  \(message)"; wifiSummary.attributedTitle = nil
+        for item in wifiItems { item.title = ""; item.attributedTitle = nil }
+        wifiItems[WifiRow.ssid].title = "  \(message)"
+    }
+
     func refreshWifi() {
         guard let iface = CWWiFiClient.shared().interface() else {
-            statusItem.button?.title = "No WiFi"
-            wifiSummary.title = "  No WiFi"; wifiSummary.attributedTitle = nil
+            showWifiUnavailable("No Wi-Fi interface")
+            updateTitle(rssi: nil, pct: nil, maxCoreTemp: nil)
             return
         }
-        let rssi  = iface.rssiValue()
+        // ssid() is gated behind Location permission on macOS 14+ and can return
+        // nil even when fully associated, so use interfaceMode (with rssi as a
+        // belt-and-braces check) to detect association.
+        let rssi = iface.rssiValue()
+        guard iface.interfaceMode() != .none || rssi != 0 else {
+            showWifiUnavailable("Not connected")
+            updateTitle(rssi: nil, pct: nil, maxCoreTemp: nil)
+            return
+        }
+        wifiConnected = true
+        let ssid  = iface.ssid() ?? "—"
         let noise = iface.noiseMeasurement()
         let pct   = rssiPercent(rssi)
         let ch    = iface.wlanChannel()
 
-        wifiItems[WifiRow.ssid].title = "  SSID: \(iface.ssid() ?? "—")"
+        wifiItems[WifiRow.ssid].title = "  SSID: \(ssid)"
         let sigOut = NSMutableAttributedString(string: "  Signal: \(rssi) dBm  (\(pct)%) ")
         sigOut.append(colorMeter(pct: pct, inverted: false))
         wifiItems[WifiRow.signal].attributedTitle = sigOut
@@ -791,7 +809,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wifiItems[WifiRow.txRate].title   = "  TX Rate: \(Int(iface.transmitRate())) Mbps"
         wifiItems[WifiRow.security].title = "  Security: \(iface.security().label)"
 
-        let sumOut = NSMutableAttributedString(string: "  \(iface.ssid() ?? "—")  \(pct)% ")
+        let sumOut = NSMutableAttributedString(string: "  \(ssid)  \(pct)% ")
         sumOut.append(colorMeter(pct: pct, inverted: false))
         wifiSummary.attributedTitle = sumOut
 
@@ -940,8 +958,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             diskItems[DiskRow.temp].attributedTitle = nil
         }
 
-        diskItems[DiskRow.lifetimeRead].title    = "  Lifetime read:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
-        diskItems[DiskRow.lifetimeWritten].title = "  Lifetime written: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
+        diskItems[DiskRow.sessionRead].title    = "  Read since boot:    \(info?.bytesRead.map(formatDiskBytes)    ?? "—")"
+        diskItems[DiskRow.sessionWritten].title = "  Written since boot: \(info?.bytesWritten.map(formatDiskBytes) ?? "—")"
     }
 
     // MARK: Graph fast refresh (1 s)
@@ -952,7 +970,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refreshWifiBandwidth() {
-        guard let iface = CWWiFiClient.shared().interface() else {
+        guard wifiConnected, let iface = CWWiFiClient.shared().interface() else {
             wifiGraph.push(top: 0, bottom: 0)
             return
         }
@@ -1017,8 +1035,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = maxCoreTemp { lastMaxTemp = t }
 
         let out = NSMutableAttributedString()
-        out.append(NSAttributedString(string: "\(lastRssi) dBm (\(lastPct)%) "))
-        out.append(colorMeter(pct: lastPct, inverted: false, small: true))
+        if wifiConnected {
+            out.append(NSAttributedString(string: "\(lastRssi) dBm (\(lastPct)%) "))
+            out.append(colorMeter(pct: lastPct, inverted: false, small: true))
+        } else {
+            out.append(NSAttributedString(string: "no Wi-Fi"))
+        }
         if let t = lastMaxTemp {
             out.append(NSAttributedString(string: " │ \(formatTemp(t))"))
         }
@@ -1064,13 +1086,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func toggleTempUnit() {
-        useFahrenheit.toggle()
-        tempUnitButton.state = useFahrenheit ? .on : .off
+        useCelsius.toggle()
+        tempUnitButton.state = useCelsius ? .on : .off
         refresh()
     }
 
     func formatTemp(_ celsius: Int) -> String {
-        useFahrenheit ? "\(celsius * 9 / 5 + 32)°F" : "\(celsius)°C"
+        useCelsius ? "\(celsius)°C" : "\(celsius * 9 / 5 + 32)°F"
     }
 
     // 30°C (idle) = 0%, 100°C (throttle) = 100%

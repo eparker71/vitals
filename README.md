@@ -12,7 +12,7 @@ A lightweight macOS menu bar dashboard showing real system stats — Wi-Fi signa
 Updates every 3 seconds (graphs update every 1 second):
 
 ```
--56 dBm (57%) ■■■■■■□□□□ │ 52°C
+-56 dBm (57%) ■■■■■■□□□□ │ 125°F
 ```
 
 - **Wi-Fi**: RSSI in dBm, percentage, color meter
@@ -42,12 +42,12 @@ The current app version is shown as a dim footer above the Close/Quit buttons.
   [download/upload bar graph]
   ───────────────────────────
   ▼ CPU                            ← click to collapse (shows hottest temp + meter)
-  Cluster 1: 46°C (23%) ■■□□□□□□□□
-  Cluster 2: 45°C (21%) ■■□□□□□□□□
-  Cluster 3: 44°C (20%) ■■□□□□□□□□
+  Cluster 1: 114°F (23%) ■■□□□□□□□□
+  Cluster 2: 113°F (21%) ■■□□□□□□□□
+  Cluster 3: 111°F (20%) ■■□□□□□□□□
   ───────────────────────────
   ▼ GPU                            ← click to collapse (shows temp + meter)
-  Temp:      42°C (17%) ■■□□□□□□□□
+  Temp:      107°F (17%) ■■□□□□□□□□
   Device:    13% ■■□□□□□□□□
   Renderer:  13% ■■□□□□□□□□
   Tiler:      9% ■□□□□□□□□□
@@ -72,10 +72,10 @@ The current app version is shown as a dim footer above the Close/Quit buttons.
   S.M.A.R.T.: Verified
   Temp:       77°F (12%) ■□□□□□□□□□
   [read/write bar graph]
-  Lifetime read:    26 GB
-  Lifetime written: 9 GB
+  Read since boot:    26 GB
+  Written since boot: 9 GB
   ───────────────────────────
-  [✓] Use Fahrenheit
+  [ ] Use Celsius
   ───────────────────────────
   [ Close ]  [ Quit ]
   Vitals 1.0.0
@@ -84,11 +84,11 @@ The current app version is shown as a dim footer above the Close/Quit buttons.
 **Intel** (per-core sensors, fan, memory temp):
 ```
   CPU
-  Core 1:    58°C (40%) ■■■■□□□□□□
-  Core 2:    54°C (34%) ■■■■□□□□□□
+  Core 1:    136°F (40%) ■■■■□□□□□□
+  Core 2:    129°F (34%) ■■■■□□□□□□
   ───────────────────────────
   Memory
-  Temp:      43°C (19%) ■■□□□□□□□□
+  Temp:      109°F (19%) ■■□□□□□□□□
   ───────────────────────────
   Fan
   Speed:     2200 RPM (35%) ■■■■□□□□□□
@@ -114,7 +114,7 @@ The Disk section includes a live read/write bar graph that updates every second 
 - **Teal bars** (downward) — write rate
 - Each half scales independently to its own peak
 - Current read/write rates are shown above the graph
-- Lifetime bytes read/written shown below
+- Bytes read/written **since the last boot** are shown below — these counters reset at every reboot, not a true device lifetime total
 - Graph remains visible even when the Disk section is collapsed
 
 ## Signal scale
@@ -130,13 +130,13 @@ Wi-Fi percentage maps RSSI to the practical range −90 dBm (0%) → −30 dBm (
 | −75 | 25%  | Weak |
 | −90 | 0%   | Unusable |
 
-CPU/GPU/memory temp percentage maps 30°C (idle, 0%) → 100°C (throttle, 100%). Battery temp uses a separate scale: 20°C (0%) → 50°C (100%). Disk temp uses 20°C (0%) → 60°C (100%).
+CPU/GPU/memory temp percentage maps 86°F (idle, 0%) → 212°F (throttle, 100%). Battery temp uses a separate scale: 68°F (0%) → 122°F (100%). Disk temp uses 68°F (0%) → 140°F (100%).
 
-Temperature unit (°C/°F) is toggled via the "Use Fahrenheit" checkbox and persists across restarts.
+Temperature unit (°C/°F) is toggled via the "Use Celsius" checkbox and persists across restarts. Defaults to Fahrenheit.
 
 ## How it works
 
-CPU/GPU temperature, memory, fan, and disk-temp data is read from the System Management Controller (SMC) via IOKit. GPU utilization (Device, Renderer, Tiler %) comes from the `AGXAccelerator` IOKit registry entry. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and lifetime bytes come from `IOBlockStorageDriver` and its parent NVMe controller. Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
+CPU/GPU temperature, memory, fan, and disk-temp data is read from the System Management Controller (SMC) via IOKit. GPU utilization (Device, Renderer, Tiler %) comes from the `AGXAccelerator` IOKit registry entry. Battery charge and cycle count come from the `AppleSmartBattery` IOKit registry entry. Disk model, S.M.A.R.T. status, and read/write byte counters come from `IOBlockStorageDriver` and its parent NVMe controller (the byte counters reset at every boot — true device-lifetime totals would require parsing NVMe SMART log pages). Wi-Fi signal and interface stats come from CoreWLAN and `getifaddrs`. No `sudo`, no third-party tools.
 
 Two timers run independently: graphs (Wi-Fi bandwidth, disk I/O) refresh every 1 second; all other stats refresh every 3 seconds. The disk read is shared between the two timers so the driver is polled at most once per second.
 
